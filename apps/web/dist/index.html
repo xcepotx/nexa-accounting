@@ -75,6 +75,29 @@
     }
     .dot{width:8px;height:8px;border-radius:99px;background:#22c55e}
     .toolbar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:0 0 18px}
+
+    .action-panel{
+      display:grid;gap:12px;margin:0 0 18px;
+      background:rgba(255,255,255,.9);border:1px solid rgba(226,232,240,.95);
+      border-radius:22px;box-shadow:var(--shadow);padding:16px;
+    }
+    .action-row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+    .operator-key-panel{
+      display:flex;gap:10px;flex-wrap:wrap;align-items:center;
+      padding:12px;border:1px solid #dbeafe;background:#eff6ff;border-radius:16px;
+    }
+    .operator-key-panel .label{font-size:12px;font-weight:950;color:#1d4ed8;text-transform:uppercase;letter-spacing:.08em}
+    .action-log{
+      display:none;padding:12px;border-radius:16px;border:1px solid var(--line);
+      background:#0f172a;color:#e2e8f0;font-size:12px;line-height:1.55;
+      max-height:240px;overflow:auto;white-space:pre-wrap;
+      font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;
+    }
+    .action-log.active{display:block}
+    .button.green{background:#ecfdf5;color:#166534;border-color:#bbf7d0}
+    .button.orange{background:#fff7ed;color:#c2410c;border-color:#fed7aa}
+    .button.red{background:#fff1f2;color:#be123c;border-color:#fecdd3}
+
     .input,.select{
       height:38px;border:1px solid var(--line);border-radius:13px;
       padding:0 12px;background:#fff;color:var(--ink);font-weight:700;
@@ -183,6 +206,23 @@
           <div class="subtitle" id="page-subtitle">Monitor POS events, previews, drafts, simulated ledger, and reports.</div>
         </div>
         <div class="status-pill" id="api-status"><span class="dot"></span><span>Checking API...</span></div>
+      </div>
+
+      <div class="action-panel" id="console-actions">
+        <div class="operator-key-panel">
+          <div class="label">Operator Key</div>
+          <input class="input" id="operator-key-input" type="password" placeholder="Paste internal API key for protected actions" />
+          <button class="button" id="save-key-button" onclick="saveOperatorKey()">Save Key</button>
+          <button class="button red" onclick="clearOperatorKey()">Clear</button>
+          <span class="muted" id="operator-key-status">No key saved in this browser.</span>
+        </div>
+        <div class="action-row">
+          <button class="button dark" onclick="reloadAll()">Refresh Console</button>
+          <button class="button" onclick="runProtectedAction('Generate Drafts', '/api/v1/journal-drafts/generate-from-previews', {})">Generate Drafts</button>
+          <button class="button orange" onclick="runProtectedAction('Post All Simulated', '/api/v1/journal-drafts/post-all-simulated', {posted_by:'console', note:'B21 console post all simulated'})">Post All Simulated</button>
+          <button class="button green" onclick="runProtectedAction('Materialize Ledger', '/api/v1/simulated-ledger/materialize-posted-drafts', {})">Materialize Ledger</button>
+        </div>
+        <div class="action-log" id="action-log"></div>
       </div>
 
       <section id="route-dashboard" class="route active">
@@ -338,6 +378,78 @@ function statusBadge(status){
   if(s.includes("dead") || s.includes("failed") || s.includes("unbalanced")) return badge(s,"bad");
   return badge(s,"warn");
 }
+
+function getOperatorKey(){
+  return localStorage.getItem("nexaAccountingOperatorKey") || "";
+}
+function updateOperatorKeyStatus(){
+  const key = getOperatorKey();
+  const input = document.getElementById("operator-key-input");
+  const status = document.getElementById("operator-key-status");
+  if(input && key && !input.value) input.value = key;
+  if(status) status.textContent = key ? "Key saved locally in this browser." : "No key saved in this browser.";
+}
+function saveOperatorKey(){
+  const input = document.getElementById("operator-key-input");
+  const value = (input?.value || "").trim();
+  if(!value){
+    showActionLog("Operator key is empty. Paste the internal API key first.", true);
+    return;
+  }
+  localStorage.setItem("nexaAccountingOperatorKey", value);
+  updateOperatorKeyStatus();
+  showActionLog("Operator key saved locally in this browser. It is not embedded in the app source.", false);
+}
+function clearOperatorKey(){
+  localStorage.removeItem("nexaAccountingOperatorKey");
+  const input = document.getElementById("operator-key-input");
+  if(input) input.value = "";
+  updateOperatorKeyStatus();
+  showActionLog("Operator key cleared from this browser.", false);
+}
+function showActionLog(message, isError=false){
+  const el = document.getElementById("action-log");
+  if(!el) return;
+  el.classList.add("active");
+  el.style.borderColor = isError ? "#fecdd3" : "#334155";
+  el.textContent = typeof message === "string" ? message : JSON.stringify(message, null, 2);
+}
+async function runProtectedAction(label, url, body){
+  const key = getOperatorKey() || (document.getElementById("operator-key-input")?.value || "").trim();
+  if(!key){
+    showActionLog(label + " blocked: operator key is required for protected action endpoints.", true);
+    return;
+  }
+
+  localStorage.setItem("nexaAccountingOperatorKey", key);
+  updateOperatorKeyStatus();
+  showActionLog("Running " + label + "...", false);
+
+  try{
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Internal-API-Key": key
+      },
+      body: JSON.stringify(body || {})
+    });
+    const text = await res.text();
+    let data;
+    try{ data = JSON.parse(text); }catch(_){ data = {raw:text}; }
+
+    if(!res.ok){
+      showActionLog(label + " failed with HTTP " + res.status + "\n" + JSON.stringify(data, null, 2), true);
+      return;
+    }
+
+    showActionLog(label + " completed.\n" + JSON.stringify(data, null, 2), false);
+    await reloadAll();
+  }catch(err){
+    showActionLog(label + " failed: " + err.message, true);
+  }
+}
+
 async function fetchJson(url){
   const res = await fetch(url);
   if(!res.ok) throw new Error(url + " " + res.status);
