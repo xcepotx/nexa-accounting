@@ -37,3 +37,7 @@ data/*.json
 
 # runtime app data
 data/
+
+# local sqlite databases
+data/*.db
+data/*.db-*

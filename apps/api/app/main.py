@@ -1,5 +1,6 @@
 import hashlib
 import json
+import sqlite3
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1786,4 +1787,434 @@ def upsert_account_mapping(mapping_key: str, body: Dict[str, Any], _: None = Dep
 
     _write_json_file(ACCOUNT_MAPPING_STORE_PATH, sorted(raw_rows, key=lambda x: (str(x.get("event_type") or ""), str(x.get("role") or ""))))
     return {"ok": True, "created": not found, "mapping": new_row}
+
+# ---------- B25A_REAL_LEDGER_DB_SQLITE ----------
+LEDGER_DB_PATH = Path(os.getenv("LEDGER_DB_PATH", "/data/accounting/app/nexa-accounting/data/nexa_accounting_ledger.db"))
+
+
+def _ledger_db_connect() -> sqlite3.Connection:
+    LEDGER_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(LEDGER_DB_PATH))
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _ledger_db_init() -> Dict[str, Any]:
+    with _ledger_db_connect() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS ledger_entries (
+                id TEXT PRIMARY KEY,
+                entry_key TEXT UNIQUE NOT NULL,
+                status TEXT NOT NULL,
+                tenant_id TEXT,
+                source TEXT,
+                event_type TEXT,
+                event_id TEXT,
+                source_number TEXT,
+                draft_id TEXT,
+                draft_key TEXT,
+                summary TEXT,
+                amount REAL DEFAULT 0,
+                total_debit REAL DEFAULT 0,
+                total_credit REAL DEFAULT 0,
+                balanced INTEGER DEFAULT 0,
+                line_count INTEGER DEFAULT 0,
+                posted_at TEXT,
+                posted_by TEXT,
+                created_at TEXT,
+                updated_at TEXT,
+                raw_json TEXT
+            )
+        """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS ledger_lines (
+                id TEXT PRIMARY KEY,
+                entry_id TEXT NOT NULL,
+                entry_key TEXT,
+                line_no INTEGER,
+                tenant_id TEXT,
+                account_code TEXT,
+                account_name TEXT,
+                debit REAL DEFAULT 0,
+                credit REAL DEFAULT 0,
+                memo TEXT,
+                source TEXT,
+                event_type TEXT,
+                event_id TEXT,
+                draft_id TEXT,
+                status TEXT,
+                created_at TEXT,
+                raw_json TEXT,
+                FOREIGN KEY(entry_id) REFERENCES ledger_entries(id)
+            )
+        """)
+
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ledger_entries_event ON ledger_entries(event_type, event_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ledger_entries_draft ON ledger_entries(draft_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ledger_lines_entry ON ledger_lines(entry_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ledger_lines_account ON ledger_lines(account_code)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ledger_lines_event ON ledger_lines(event_type, event_id)")
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS ledger_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT,
+                updated_at TEXT
+            )
+        """)
+
+        conn.execute(
+            "INSERT OR REPLACE INTO ledger_meta(key, value, updated_at) VALUES (?, ?, ?)",
+            ("schema_version", "b25a_sqlite_ledger_v1", now_iso()),
+        )
+        conn.commit()
+
+    return {
+        "ok": True,
+        "path": str(LEDGER_DB_PATH),
+        "schema_version": "b25a_sqlite_ledger_v1",
+    }
+
+
+def _db_row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
+    return {key: row[key] for key in row.keys()}
+
+
+def _ledger_db_counts() -> Dict[str, int]:
+    _ledger_db_init()
+    with _ledger_db_connect() as conn:
+        entries = conn.execute("SELECT COUNT(*) AS c FROM ledger_entries").fetchone()["c"]
+        lines = conn.execute("SELECT COUNT(*) AS c FROM ledger_lines").fetchone()["c"]
+    return {"entries": int(entries or 0), "lines": int(lines or 0)}
+
+
+def _insert_ledger_entry_db(conn: sqlite3.Connection, entry: Dict[str, Any]) -> bool:
+    raw_json = json.dumps(entry, ensure_ascii=False, default=_json_default)
+    cur = conn.execute(
+        """
+        INSERT OR IGNORE INTO ledger_entries (
+            id, entry_key, status, tenant_id, source, event_type, event_id,
+            source_number, draft_id, draft_key, summary, amount, total_debit,
+            total_credit, balanced, line_count, posted_at, posted_by,
+            created_at, updated_at, raw_json
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            entry.get("id"),
+            entry.get("entry_key"),
+            entry.get("status") or "posted_simulated",
+            entry.get("tenant_id"),
+            entry.get("source"),
+            entry.get("event_type"),
+            entry.get("event_id"),
+            entry.get("source_number"),
+            entry.get("draft_id"),
+            entry.get("draft_key"),
+            entry.get("summary"),
+            _money(entry.get("amount")),
+            _money(entry.get("total_debit")),
+            _money(entry.get("total_credit")),
+            1 if entry.get("balanced") else 0,
+            int(entry.get("line_count") or 0),
+            entry.get("posted_simulated_at") or entry.get("posted_at"),
+            entry.get("posted_simulated_by") or entry.get("posted_by"),
+            entry.get("created_at"),
+            entry.get("updated_at"),
+            raw_json,
+        ),
+    )
+    return cur.rowcount > 0
+
+
+def _insert_ledger_line_db(conn: sqlite3.Connection, line: Dict[str, Any]) -> bool:
+    raw_json = json.dumps(line, ensure_ascii=False, default=_json_default)
+    cur = conn.execute(
+        """
+        INSERT OR IGNORE INTO ledger_lines (
+            id, entry_id, entry_key, line_no, tenant_id, account_code,
+            account_name, debit, credit, memo, source, event_type, event_id,
+            draft_id, status, created_at, raw_json
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            line.get("id"),
+            line.get("entry_id"),
+            line.get("entry_key"),
+            int(line.get("line_no") or 0),
+            line.get("tenant_id"),
+            line.get("account_code"),
+            line.get("account_name"),
+            _money(line.get("debit")),
+            _money(line.get("credit")),
+            line.get("memo"),
+            line.get("source"),
+            line.get("event_type"),
+            line.get("event_id"),
+            line.get("draft_id"),
+            line.get("status") or "posted_simulated",
+            line.get("created_at"),
+            raw_json,
+        ),
+    )
+    return cur.rowcount > 0
+
+
+def _backfill_ledger_db_from_simulated_jsonl() -> Dict[str, Any]:
+    _ledger_db_init()
+
+    entries = _read_jsonl_chronological(SIM_LEDGER_ENTRY_STORE_PATH, limit=100000)
+    lines = _read_jsonl_chronological(SIM_LEDGER_LINE_STORE_PATH, limit=200000)
+
+    created_entries = 0
+    skipped_entries = 0
+    created_lines = 0
+    skipped_lines = 0
+
+    with _ledger_db_connect() as conn:
+        for entry in entries:
+            if _insert_ledger_entry_db(conn, entry):
+                created_entries += 1
+            else:
+                skipped_entries += 1
+
+        for line in lines:
+            if _insert_ledger_line_db(conn, line):
+                created_lines += 1
+            else:
+                skipped_lines += 1
+
+        conn.execute(
+            "INSERT OR REPLACE INTO ledger_meta(key, value, updated_at) VALUES (?, ?, ?)",
+            ("last_backfill_from_simulated_jsonl", json.dumps({
+                "created_entries": created_entries,
+                "skipped_entries": skipped_entries,
+                "created_lines": created_lines,
+                "skipped_lines": skipped_lines,
+            }, ensure_ascii=False), now_iso()),
+        )
+        conn.commit()
+
+    return {
+        "ok": True,
+        "created_entries": created_entries,
+        "skipped_entries": skipped_entries,
+        "created_lines": created_lines,
+        "skipped_lines": skipped_lines,
+        "counts": _ledger_db_counts(),
+    }
+
+
+def _public_ledger_db_entry_summary(row: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "id": row.get("id"),
+        "entry_key": row.get("entry_key"),
+        "status": row.get("status"),
+        "tenant_id": row.get("tenant_id"),
+        "source": row.get("source"),
+        "event_type": row.get("event_type"),
+        "event_id": row.get("event_id"),
+        "source_number": row.get("source_number"),
+        "draft_id": row.get("draft_id"),
+        "summary": row.get("summary"),
+        "amount": row.get("amount"),
+        "total_debit": row.get("total_debit"),
+        "total_credit": row.get("total_credit"),
+        "balanced": bool(row.get("balanced")),
+        "line_count": row.get("line_count"),
+        "posted_at": row.get("posted_at"),
+        "posted_by": row.get("posted_by"),
+        "created_at": row.get("created_at"),
+        "updated_at": row.get("updated_at"),
+    }
+
+
+@app.post("/api/v1/ledger-db/init")
+def init_ledger_db(_: None = Depends(require_internal_key)) -> Dict[str, Any]:
+    result = _ledger_db_init()
+    result["counts"] = _ledger_db_counts()
+    return result
+
+
+@app.post("/api/v1/ledger-db/backfill-from-simulated")
+def backfill_ledger_db_from_simulated(_: None = Depends(require_internal_key)) -> Dict[str, Any]:
+    return _backfill_ledger_db_from_simulated_jsonl()
+
+
+@app.get("/api/v1/ledger-db/entries")
+def list_ledger_db_entries(limit: int = 500) -> Dict[str, Any]:
+    _ledger_db_init()
+    limit = max(1, min(limit, 1000))
+    with _ledger_db_connect() as conn:
+        rows = [
+            _db_row_to_dict(row)
+            for row in conn.execute(
+                "SELECT * FROM ledger_entries ORDER BY COALESCE(posted_at, created_at, id) DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        ]
+
+    return {
+        "ok": True,
+        "basis": "sqlite_ledger_db",
+        "count": len(rows),
+        "items": [_public_ledger_db_entry_summary(row) for row in rows],
+        "counts": _ledger_db_counts(),
+    }
+
+
+@app.get("/api/v1/ledger-db/lines")
+def list_ledger_db_lines(entry_id: Optional[str] = None, limit: int = 1000) -> Dict[str, Any]:
+    _ledger_db_init()
+    limit = max(1, min(limit, 5000))
+
+    with _ledger_db_connect() as conn:
+        if entry_id:
+            rows = [
+                _db_row_to_dict(row)
+                for row in conn.execute(
+                    "SELECT * FROM ledger_lines WHERE entry_id = ? ORDER BY line_no ASC LIMIT ?",
+                    (entry_id, limit),
+                ).fetchall()
+            ]
+        else:
+            rows = [
+                _db_row_to_dict(row)
+                for row in conn.execute(
+                    "SELECT * FROM ledger_lines ORDER BY COALESCE(created_at, id) DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+            ]
+
+    return {
+        "ok": True,
+        "basis": "sqlite_ledger_db",
+        "count": len(rows),
+        "items": rows,
+    }
+
+
+@app.get("/api/v1/ledger-db/summary")
+def ledger_db_summary() -> Dict[str, Any]:
+    _ledger_db_init()
+
+    with _ledger_db_connect() as conn:
+        totals = _db_row_to_dict(conn.execute("""
+            SELECT
+              COUNT(*) AS line_count,
+              COALESCE(SUM(debit), 0) AS total_debit,
+              COALESCE(SUM(credit), 0) AS total_credit
+            FROM ledger_lines
+        """).fetchone())
+
+        entry_count = conn.execute("SELECT COUNT(*) AS c FROM ledger_entries").fetchone()["c"]
+
+        by_account = [
+            _db_row_to_dict(row)
+            for row in conn.execute("""
+                SELECT
+                  account_code,
+                  account_name,
+                  COUNT(*) AS line_count,
+                  COALESCE(SUM(debit), 0) AS debit,
+                  COALESCE(SUM(credit), 0) AS credit
+                FROM ledger_lines
+                GROUP BY account_code, account_name
+                ORDER BY account_code
+            """).fetchall()
+        ]
+
+        by_event_type = [
+            _db_row_to_dict(row)
+            for row in conn.execute("""
+                SELECT
+                  event_type,
+                  COUNT(DISTINCT entry_id) AS entry_count,
+                  COUNT(*) AS line_count,
+                  COALESCE(SUM(debit), 0) AS total_debit,
+                  COALESCE(SUM(credit), 0) AS total_credit
+                FROM ledger_lines
+                GROUP BY event_type
+                ORDER BY event_type
+            """).fetchall()
+        ]
+
+        unbalanced_entries = [
+            _public_ledger_db_entry_summary(_db_row_to_dict(row))
+            for row in conn.execute("""
+                SELECT * FROM ledger_entries
+                WHERE balanced = 0 OR ROUND(total_debit - total_credit, 2) != 0
+                ORDER BY COALESCE(posted_at, created_at, id) DESC
+            """).fetchall()
+        ]
+
+    for item in by_account:
+        net = _money(_money(item.get("debit")) - _money(item.get("credit")))
+        item["net_debit"] = net if net > 0 else 0.0
+        item["net_credit"] = abs(net) if net < 0 else 0.0
+
+    total_debit = _money(totals.get("total_debit"))
+    total_credit = _money(totals.get("total_credit"))
+
+    return {
+        "ok": True,
+        "basis": "sqlite_ledger_db",
+        "summary": {
+            "entry_count": int(entry_count or 0),
+            "line_count": int(totals.get("line_count") or 0),
+            "total_debit": total_debit,
+            "total_credit": total_credit,
+            "difference": _money(total_debit - total_credit),
+            "balanced": _money(total_debit) == _money(total_credit),
+            "unbalanced_entry_count": len(unbalanced_entries),
+        },
+        "by_account": by_account,
+        "by_event_type": by_event_type,
+        "unbalanced_entries": unbalanced_entries,
+    }
+
+
+@app.get("/api/v1/reports/trial-balance-db")
+def trial_balance_db_report() -> Dict[str, Any]:
+    summary = ledger_db_summary()
+    rows = []
+
+    for item in summary.get("by_account", []):
+        rows.append({
+            "account_code": item.get("account_code"),
+            "account_name": item.get("account_name"),
+            "debit": _money(item.get("debit")),
+            "credit": _money(item.get("credit")),
+            "ending_debit": _money(item.get("net_debit")),
+            "ending_credit": _money(item.get("net_credit")),
+            "line_count": item.get("line_count"),
+        })
+
+    totals = {
+        "debit": _money(sum(row["debit"] for row in rows)),
+        "credit": _money(sum(row["credit"] for row in rows)),
+        "ending_debit": _money(sum(row["ending_debit"] for row in rows)),
+        "ending_credit": _money(sum(row["ending_credit"] for row in rows)),
+    }
+    totals["movement_difference"] = _money(totals["debit"] - totals["credit"])
+    totals["ending_difference"] = _money(totals["ending_debit"] - totals["ending_credit"])
+
+    return {
+        "ok": True,
+        "report": "trial_balance_db",
+        "basis": "sqlite_ledger_db",
+        "summary": {
+            "account_count": len(rows),
+            "entry_count": summary.get("summary", {}).get("entry_count", 0),
+            "line_count": summary.get("summary", {}).get("line_count", 0),
+            "movement_balanced": totals["movement_difference"] == 0,
+            "ending_balanced": totals["ending_difference"] == 0,
+            "balanced": totals["movement_difference"] == 0 and totals["ending_difference"] == 0,
+            **totals,
+        },
+        "rows": rows,
+        "note": "Trial balance generated from SQLite ledger DB.",
+    }
 
