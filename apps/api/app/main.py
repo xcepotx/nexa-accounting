@@ -880,3 +880,88 @@ def post_all_journal_drafts_simulated(body: Optional[Dict[str, Any]] = None, _: 
         "note": "All balanced drafts were posted_simulated and materialized to simulated ledger idempotently.",
     }
 
+@app.get("/api/v1/simulated-ledger/summary")
+def simulated_ledger_summary() -> Dict[str, Any]:
+    entries = _read_jsonl_chronological(SIM_LEDGER_ENTRY_STORE_PATH, limit=50000)
+    lines = _read_jsonl_chronological(SIM_LEDGER_LINE_STORE_PATH, limit=100000)
+
+    total_debit = _money(sum(_money(line.get("debit")) for line in lines))
+    total_credit = _money(sum(_money(line.get("credit")) for line in lines))
+
+    by_account = {}
+    for line in lines:
+        code = str(line.get("account_code") or "-")
+        name = str(line.get("account_name") or "Unknown Account")
+        key = f"{code}:{name}"
+
+        if key not in by_account:
+            by_account[key] = {
+                "account_code": code,
+                "account_name": name,
+                "debit": 0.0,
+                "credit": 0.0,
+                "net_debit": 0.0,
+                "net_credit": 0.0,
+                "line_count": 0,
+            }
+
+        item = by_account[key]
+        item["debit"] = _money(item["debit"] + _money(line.get("debit")))
+        item["credit"] = _money(item["credit"] + _money(line.get("credit")))
+        item["line_count"] += 1
+
+    for item in by_account.values():
+        net = _money(item["debit"] - item["credit"])
+        item["net_debit"] = net if net > 0 else 0.0
+        item["net_credit"] = abs(net) if net < 0 else 0.0
+
+    by_event_type = {}
+    for entry in entries:
+        event_type = str(entry.get("event_type") or "unknown")
+        if event_type not in by_event_type:
+            by_event_type[event_type] = {
+                "event_type": event_type,
+                "entry_count": 0,
+                "line_count": 0,
+                "amount": 0.0,
+                "total_debit": 0.0,
+                "total_credit": 0.0,
+                "balanced_entries": 0,
+                "unbalanced_entries": 0,
+            }
+
+        item = by_event_type[event_type]
+        item["entry_count"] += 1
+        item["line_count"] += int(entry.get("line_count") or 0)
+        item["amount"] = _money(item["amount"] + _money(entry.get("amount")))
+        item["total_debit"] = _money(item["total_debit"] + _money(entry.get("total_debit")))
+        item["total_credit"] = _money(item["total_credit"] + _money(entry.get("total_credit")))
+
+        if entry.get("balanced"):
+            item["balanced_entries"] += 1
+        else:
+            item["unbalanced_entries"] += 1
+
+    unbalanced_entries = [
+        _public_simulated_ledger_entry_summary(entry)
+        for entry in entries
+        if not entry.get("balanced")
+    ]
+
+    return {
+        "ok": True,
+        "summary": {
+            "entry_count": len(entries),
+            "line_count": len(lines),
+            "total_debit": total_debit,
+            "total_credit": total_credit,
+            "difference": _money(total_debit - total_credit),
+            "balanced": _money(total_debit) == _money(total_credit),
+            "unbalanced_entry_count": len(unbalanced_entries),
+        },
+        "by_account": sorted(by_account.values(), key=lambda x: str(x.get("account_code") or "")),
+        "by_event_type": sorted(by_event_type.values(), key=lambda x: str(x.get("event_type") or "")),
+        "unbalanced_entries": unbalanced_entries,
+        "note": "Simulated ledger summary only. Permanent accounting ledger is not enabled yet.",
+    }
+

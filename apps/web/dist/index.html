@@ -85,6 +85,17 @@
         <div id="journal-draft-body" class="empty">Loading draft journals...</div>
       </section>
 
+      <section class="ledger-summary">
+        <div class="events-head">
+          <div>
+            <h2>Ledger Summary</h2>
+            <p>Aggregated from simulated ledger entries and lines. This validates debit/credit balance and account totals.</p>
+          </div>
+          <div id="ledger-summary-status" class="pill">Loading...</div>
+        </div>
+        <div id="ledger-summary-body" class="empty">Loading ledger summary...</div>
+      </section>
+
       <section class="ledger-store">
         <div class="events-head">
           <div>
@@ -314,7 +325,82 @@
     }
 
     loadJournalDraftQueue();
+
+    function loadLedgerSummary() {
+      fetch("/api/v1/simulated-ledger/summary")
+        .then(r => r.json())
+        .then(data => {
+          const summary = data && data.summary ? data.summary : {};
+          const accounts = data && Array.isArray(data.by_account) ? data.by_account : [];
+          const eventTypes = data && Array.isArray(data.by_event_type) ? data.by_event_type : [];
+
+          document.querySelector("#ledger-summary-status").textContent = summary.balanced ? "Balanced" : "Unbalanced";
+
+          const accountRows = accounts.map((item) => `
+            <tr>
+              <td>${escapeHtml(item.account_code || "-")}</td>
+              <td>${escapeHtml(item.account_name || "-")}</td>
+              <td class="right">${money(item.debit)}</td>
+              <td class="right">${money(item.credit)}</td>
+              <td class="right">${money(item.net_debit)}</td>
+              <td class="right">${money(item.net_credit)}</td>
+            </tr>
+          `).join("");
+
+          const eventRows = eventTypes.map((item) => `
+            <tr>
+              <td>${escapeHtml(item.event_type || "-")}</td>
+              <td class="right">${item.entry_count || 0}</td>
+              <td class="right">${item.line_count || 0}</td>
+              <td class="right">${money(item.amount)}</td>
+              <td class="right">${money(item.total_debit)}</td>
+              <td class="right">${money(item.total_credit)}</td>
+            </tr>
+          `).join("");
+
+          document.querySelector("#ledger-summary-body").className = "";
+          document.querySelector("#ledger-summary-body").innerHTML = `
+            <div class="summary-metrics">
+              <div class="summary-metric"><div class="label">Entries</div><div class="value">${summary.entry_count || 0}</div></div>
+              <div class="summary-metric"><div class="label">Lines</div><div class="value">${summary.line_count || 0}</div></div>
+              <div class="summary-metric"><div class="label">Debit</div><div class="value">${money(summary.total_debit)}</div></div>
+              <div class="summary-metric"><div class="label">Credit</div><div class="value">${money(summary.total_credit)}</div></div>
+            </div>
+
+            <div class="summary-block">
+              <h3>By Account</h3>
+              <table class="line-table">
+                <thead>
+                  <tr>
+                    <th>Code</th><th>Account</th><th class="right">Debit</th><th class="right">Credit</th><th class="right">Net Dr</th><th class="right">Net Cr</th>
+                  </tr>
+                </thead>
+                <tbody>${accountRows}</tbody>
+              </table>
+            </div>
+
+            <div class="summary-block">
+              <h3>By Event Type</h3>
+              <table class="line-table">
+                <thead>
+                  <tr>
+                    <th>Event</th><th class="right">Entries</th><th class="right">Lines</th><th class="right">Amount</th><th class="right">Debit</th><th class="right">Credit</th>
+                  </tr>
+                </thead>
+                <tbody>${eventRows}</tbody>
+              </table>
+            </div>
+          `;
+        })
+        .catch(() => {
+          document.querySelector("#ledger-summary-status").textContent = "Offline";
+          document.querySelector("#ledger-summary-body").className = "empty";
+          document.querySelector("#ledger-summary-body").textContent = "Could not load ledger summary.";
+        });
+    }
+
     loadSimulatedLedgerStore();
+    loadLedgerSummary();
   </script>
 </body>
 </html>
