@@ -70,6 +70,9 @@ SUPPORTED_POS_EVENT_TYPES = {
     "purchase_order_received",
     "cash_movement_created",
     "stock_adjusted",
+    "expense_created",
+    "payment_settlement_created",
+    "supplier_payment_recorded",
 }
 
 
@@ -499,6 +502,112 @@ def _build_stock_adjusted_preview(event: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+
+def _build_expense_created_preview(event: Dict[str, Any]) -> Dict[str, Any]:
+    payload = event.get("payload") or {}
+    expense = payload.get("expense") or payload
+    expense_id = expense.get("id") or event.get("event_id")
+    expense_number = expense.get("expense_number") or expense_id
+    amount = _money(expense.get("amount"))
+
+    expense_code = str(expense.get("expense_account_code") or "6000")
+    expense_name = str(expense.get("expense_account_name") or "Operating Expense")
+    payment_code = str(expense.get("payment_account_code") or "1000")
+    payment_name = str(expense.get("payment_account_name") or "Cash / Payment Clearing")
+
+    lines = [
+        _journal_line(expense_code, expense_name, debit=amount, memo=f"Expense {expense_number}"),
+        _journal_line(payment_code, payment_name, credit=amount, memo=f"Expense payment {expense_number}"),
+    ]
+
+    return {
+        "event_type": "expense_created",
+        "event_id": event.get("event_id"),
+        "source": "nexapos",
+        "tenant_id": event.get("tenant_id"),
+        "received_at": event.get("received_at"),
+        "source_number": expense_number,
+        "status": "preview",
+        "amount": amount,
+        "summary": f"Preview journal for expense {expense_number}",
+        "lines": lines,
+        "balanced": _money(sum(x["debit"] for x in lines)) == _money(sum(x["credit"] for x in lines)),
+    }
+
+
+def _build_payment_settlement_created_preview(event: Dict[str, Any]) -> Dict[str, Any]:
+    payload = event.get("payload") or {}
+    settlement = payload.get("settlement") or payload
+    settlement_id = settlement.get("id") or event.get("event_id")
+    settlement_number = settlement.get("settlement_number") or settlement_id
+
+    gross = _money(settlement.get("gross_amount"))
+    fee = _money(settlement.get("fee_amount"))
+    net = _money(settlement.get("net_amount") or (gross - fee))
+
+    clearing_code = str(settlement.get("clearing_account_code") or "1000")
+    clearing_name = str(settlement.get("clearing_account_name") or "Payment Clearing")
+    bank_code = str(settlement.get("bank_account_code") or "1010")
+    bank_name = str(settlement.get("bank_account_name") or "Bank")
+    fee_code = str(settlement.get("fee_expense_account_code") or "6100")
+    fee_name = str(settlement.get("fee_expense_account_name") or "Payment Fee Expense")
+
+    lines = [
+        _journal_line(bank_code, bank_name, debit=net, memo=f"Settlement net received {settlement_number}"),
+    ]
+
+    if fee > 0:
+        lines.append(_journal_line(fee_code, fee_name, debit=fee, memo=f"Settlement fee {settlement_number}"))
+
+    lines.append(_journal_line(clearing_code, clearing_name, credit=gross, memo=f"Clear payment settlement {settlement_number}"))
+
+    return {
+        "event_type": "payment_settlement_created",
+        "event_id": event.get("event_id"),
+        "source": "nexapos",
+        "tenant_id": event.get("tenant_id"),
+        "received_at": event.get("received_at"),
+        "source_number": settlement_number,
+        "status": "preview",
+        "amount": gross,
+        "summary": f"Preview journal for payment settlement {settlement_number}",
+        "lines": lines,
+        "balanced": _money(sum(x["debit"] for x in lines)) == _money(sum(x["credit"] for x in lines)),
+    }
+
+
+def _build_supplier_payment_recorded_preview(event: Dict[str, Any]) -> Dict[str, Any]:
+    payload = event.get("payload") or {}
+    payment = payload.get("supplier_payment") or payload
+    payment_id = payment.get("id") or event.get("event_id")
+    payment_number = payment.get("payment_number") or payment_id
+    amount = _money(payment.get("amount"))
+
+    ap_code = str(payment.get("ap_account_code") or "2000")
+    ap_name = str(payment.get("ap_account_name") or "Accounts Payable")
+    payment_code = str(payment.get("payment_account_code") or "1000")
+    payment_name = str(payment.get("payment_account_name") or "Cash / Payment Clearing")
+
+    lines = [
+        _journal_line(ap_code, ap_name, debit=amount, memo=f"Supplier payment {payment_number}"),
+        _journal_line(payment_code, payment_name, credit=amount, memo=f"Pay supplier {payment_number}"),
+    ]
+
+    return {
+        "event_type": "supplier_payment_recorded",
+        "event_id": event.get("event_id"),
+        "source": "nexapos",
+        "tenant_id": event.get("tenant_id"),
+        "received_at": event.get("received_at"),
+        "source_number": payment_number,
+        "status": "preview",
+        "amount": amount,
+        "summary": f"Preview journal for supplier payment {payment_number}",
+        "lines": lines,
+        "balanced": _money(sum(x["debit"] for x in lines)) == _money(sum(x["credit"] for x in lines)),
+    }
+
+
 def _build_journal_preview(record: Dict[str, Any], records: Optional[list[Dict[str, Any]]] = None) -> Optional[Dict[str, Any]]:
     event = record.get("event") or {}
     event_type = event.get("event_type")
@@ -522,6 +631,15 @@ def _build_journal_preview(record: Dict[str, Any], records: Optional[list[Dict[s
 
     if event_type == "stock_adjusted":
         return _build_stock_adjusted_preview(event_with_received)
+
+    if event_type == "expense_created":
+        return _build_expense_created_preview(event_with_received)
+
+    if event_type == "payment_settlement_created":
+        return _build_payment_settlement_created_preview(event_with_received)
+
+    if event_type == "supplier_payment_recorded":
+        return _build_supplier_payment_recorded_preview(event_with_received)
 
     return None
 
