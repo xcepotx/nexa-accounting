@@ -68,6 +68,8 @@ SUPPORTED_POS_EVENT_TYPES = {
     "sale_completed",
     "sale_voided",
     "purchase_order_received",
+    "cash_movement_created",
+    "stock_adjusted",
 }
 
 
@@ -425,6 +427,78 @@ def _build_po_received_preview(event: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+
+def _build_cash_movement_created_preview(event: Dict[str, Any]) -> Dict[str, Any]:
+    payload = event.get("payload") or {}
+    movement = payload.get("cash_movement") or payload
+    movement_id = movement.get("id") or event.get("event_id")
+    movement_type = str(movement.get("type") or "").lower()
+    amount = _money(movement.get("amount"))
+
+    if movement_type == "in":
+        lines = [
+            _journal_line("1000", "Cash / Payment Clearing", debit=amount, memo=f"Cash in {movement_id}"),
+            _journal_line("6200", "Cash Over / Short", credit=amount, memo=f"Cash movement offset {movement_id}"),
+        ]
+        summary = f"Preview journal for cash in {movement_id}"
+    else:
+        lines = [
+            _journal_line("6200", "Cash Over / Short", debit=amount, memo=f"Cash movement offset {movement_id}"),
+            _journal_line("1000", "Cash / Payment Clearing", credit=amount, memo=f"Cash out {movement_id}"),
+        ]
+        summary = f"Preview journal for cash out {movement_id}"
+
+    return {
+        "event_type": "cash_movement_created",
+        "event_id": event.get("event_id"),
+        "source": "nexapos",
+        "tenant_id": event.get("tenant_id"),
+        "received_at": event.get("received_at"),
+        "source_number": movement_id,
+        "status": "preview",
+        "amount": amount,
+        "summary": summary,
+        "lines": lines,
+        "balanced": _money(sum(x["debit"] for x in lines)) == _money(sum(x["credit"] for x in lines)),
+    }
+
+
+def _build_stock_adjusted_preview(event: Dict[str, Any]) -> Dict[str, Any]:
+    payload = event.get("payload") or {}
+    movement = payload.get("stock_movement") or payload
+    movement_id = movement.get("id") or event.get("event_id")
+    product_name = movement.get("product_name") or payload.get("product_name") or "Inventory item"
+
+    qty_change = _money(movement.get("qty_change") or payload.get("qty_change"))
+    unit_cost = _money(payload.get("unit_cost") or movement.get("unit_cost") or movement.get("cost"))
+    amount = _money(payload.get("value") or abs(qty_change * unit_cost))
+
+    if qty_change >= 0:
+        lines = [
+            _journal_line("1200", "Inventory", debit=amount, memo=f"Stock increase {product_name} / {movement_id}"),
+            _journal_line("6300", "Inventory Adjustment", credit=amount, memo=f"Inventory adjustment offset {movement_id}"),
+        ]
+    else:
+        lines = [
+            _journal_line("6300", "Inventory Adjustment", debit=amount, memo=f"Stock decrease {product_name} / {movement_id}"),
+            _journal_line("1200", "Inventory", credit=amount, memo=f"Inventory decrease {movement_id}"),
+        ]
+
+    return {
+        "event_type": "stock_adjusted",
+        "event_id": event.get("event_id"),
+        "source": "nexapos",
+        "tenant_id": event.get("tenant_id"),
+        "received_at": event.get("received_at"),
+        "source_number": movement_id,
+        "status": "preview",
+        "amount": amount,
+        "summary": f"Preview journal for stock adjustment {product_name}",
+        "lines": lines,
+        "balanced": _money(sum(x["debit"] for x in lines)) == _money(sum(x["credit"] for x in lines)),
+    }
+
+
 def _build_journal_preview(record: Dict[str, Any], records: Optional[list[Dict[str, Any]]] = None) -> Optional[Dict[str, Any]]:
     event = record.get("event") or {}
     event_type = event.get("event_type")
@@ -442,6 +516,12 @@ def _build_journal_preview(record: Dict[str, Any], records: Optional[list[Dict[s
 
     if event_type == "purchase_order_received":
         return _build_po_received_preview(event_with_received)
+
+    if event_type == "cash_movement_created":
+        return _build_cash_movement_created_preview(event_with_received)
+
+    if event_type == "stock_adjusted":
+        return _build_stock_adjusted_preview(event_with_received)
 
     return None
 
