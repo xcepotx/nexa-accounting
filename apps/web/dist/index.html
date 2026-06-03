@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Nexa Accounting</title>
+  <style>
+    body{margin:0;font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f8fafc;color:#0f172a}
+    .shell{min-height:100vh;display:flex}
+    aside{width:280px;background:#0f172a;color:white;padding:28px 22px;box-sizing:border-box}
+    main{flex:1;padding:34px;box-sizing:border-box;background:radial-gradient(circle at top right,#dbeafe 0,transparent 32rem),#f8fafc}
+    .brand{display:flex;align-items:center;gap:12px;margin-bottom:36px}
+    .logo{width:40px;height:40px;border-radius:14px;display:grid;place-items:center;background:white;color:#0f172a;font-weight:900}
+    .brand-title{font-size:18px;font-weight:800}.brand-sub{font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:#94a3b8;margin-top:2px}
+    .nav-title{font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:#64748b;margin:22px 0 10px}
+    .nav-item{padding:11px 12px;border-radius:12px;color:#cbd5e1;font-size:14px;margin-bottom:4px}.nav-item.active{background:white;color:#0f172a;font-weight:800}
+    .hero{background:#0f172a;color:white;padding:34px;border-radius:32px;box-shadow:0 24px 70px rgba(15,23,42,.14)}
+    .eyebrow{font-size:12px;letter-spacing:.25em;text-transform:uppercase;color:#cbd5e1;font-weight:800}
+    h1{margin:14px 0 10px;font-size:42px;line-height:1;letter-spacing:-.04em}.hero p{color:#cbd5e1;max-width:760px;line-height:1.7;font-size:15px}
+    .grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;margin-top:22px}
+    .card{background:white;border:1px solid #e2e8f0;border-radius:24px;padding:22px;box-shadow:0 10px 30px rgba(15,23,42,.05)}
+    .card h3{margin:0 0 8px;font-size:16px}.card p{margin:0;color:#64748b;font-size:13px;line-height:1.6}
+    .status{display:inline-flex;gap:8px;align-items:center;padding:8px 12px;border-radius:999px;background:#ecfdf5;color:#047857;font-size:12px;font-weight:800}
+    .dot{width:8px;height:8px;background:#10b981;border-radius:50%}.footer{margin-top:24px;color:#64748b;font-size:12px}
+    @media(max-width:900px){.shell{display:block}aside{width:auto}.grid{grid-template-columns:1fr}main{padding:20px}h1{font-size:34px}}
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside>
+      <div class="brand"><div class="logo">NA</div><div><div class="brand-title">Nexa Accounting</div><div class="brand-sub">Finance Engine</div></div></div>
+      <div class="nav-title">Control</div>
+      <div class="nav-item active">Dashboard</div>
+      <div class="nav-item">Chart of Accounts</div>
+      <div class="nav-item">Journal Entries</div>
+      <div class="nav-item">Ledger</div>
+      <div class="nav-title">Reports</div>
+      <div class="nav-item">Profit & Loss</div>
+      <div class="nav-item">Balance Sheet</div>
+      <div class="nav-item">Trial Balance</div>
+    </aside>
+    <main>
+      <section class="hero">
+        <div class="eyebrow">B2 Skeleton Online</div>
+        <h1>Standalone accounting app is ready.</h1>
+        <p>Nexa Accounting is being separated from NexaPOS. This skeleton already has its own web app, API service, and POS event receiver placeholder.</p>
+        <div id="api-status" class="status"><span class="dot"></span><span>Checking API...</span></div>
+      </section>
+      <section class="grid">
+        <div class="card"><h3>POS Event Receiver</h3><p>Prepared endpoint for sales, void, purchase receive, settlement, expense, and supplier payment events.</p></div>
+        <div class="card"><h3>Finance Engine Boundary</h3><p>NexaPOS stays focused on sales, stock, outlets, cashier, and operational reports.</p></div>
+        <div class="card"><h3>Accounting Migration</h3><p>Next batches will move COA, journals, ledger, P&L, balance sheet, and trial balance.</p></div>
+      </section>
+      <div class="footer"><strong>API:</strong> <code>/api/health</code> · <strong>Source:</strong> /data/accounting/app/nexa-accounting</div>
+    </main>
+  </div>
+  <script>
+    fetch("/api/health").then(r=>r.json()).then(data=>{
+      document.querySelector("#api-status span:last-child").textContent = data && data.ok ? "API online: " + data.service : "API check returned unexpected response";
+    }).catch(()=>{
+      document.querySelector("#api-status span:last-child").textContent = "API offline";
+      document.querySelector("#api-status").style.background="#fff1f2";
+      document.querySelector("#api-status").style.color="#be123c";
+      document.querySelector(".dot").style.background="#e11d48";
+    });
+  </script>
+</body>
+</html>
