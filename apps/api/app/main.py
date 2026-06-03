@@ -1529,3 +1529,223 @@ def get_event_detail(event_key: str, _: None = Depends(require_internal_key)) ->
         "pipeline": _event_pipeline_status(selected, records=records),
     }
 
+# ---------- B23_CHART_OF_ACCOUNTS_AND_MAPPING ----------
+CHART_OF_ACCOUNTS_STORE_PATH = Path(os.getenv("CHART_OF_ACCOUNTS_STORE_PATH", "/data/accounting/app/nexa-accounting/data/chart_of_accounts.json"))
+ACCOUNT_MAPPING_STORE_PATH = Path(os.getenv("ACCOUNT_MAPPING_STORE_PATH", "/data/accounting/app/nexa-accounting/data/account_mappings.json"))
+
+
+DEFAULT_CHART_OF_ACCOUNTS = [
+    {"code": "1000", "name": "Cash / Payment Clearing", "type": "asset", "normal_balance": "debit", "active": True, "description": "Cash drawer, payment clearing, or temporary cash account."},
+    {"code": "1010", "name": "Bank", "type": "asset", "normal_balance": "debit", "active": True, "description": "Bank account for settlement deposits."},
+    {"code": "1200", "name": "Inventory", "type": "asset", "normal_balance": "debit", "active": True, "description": "Inventory value."},
+    {"code": "2000", "name": "Accounts Payable", "type": "liability", "normal_balance": "credit", "active": True, "description": "Supplier payable balance."},
+    {"code": "4000", "name": "Sales Revenue", "type": "revenue", "normal_balance": "credit", "active": True, "description": "Product sales revenue."},
+    {"code": "4100", "name": "Sales Discount", "type": "contra_revenue", "normal_balance": "debit", "active": True, "description": "Sales discount and voucher discount."},
+    {"code": "5000", "name": "Cost of Goods Sold", "type": "expense", "normal_balance": "debit", "active": True, "description": "COGS from POS sales."},
+    {"code": "6000", "name": "Operating Expense", "type": "expense", "normal_balance": "debit", "active": True, "description": "General operating expense."},
+    {"code": "6100", "name": "Payment Fee Expense", "type": "expense", "normal_balance": "debit", "active": True, "description": "QRIS/card/payment provider fee."},
+    {"code": "6200", "name": "Cash Over / Short", "type": "expense", "normal_balance": "debit", "active": True, "description": "Cash movement offset and cash variance."},
+    {"code": "6300", "name": "Inventory Adjustment", "type": "expense", "normal_balance": "debit", "active": True, "description": "Stock adjustment gain/loss offset."},
+]
+
+
+DEFAULT_ACCOUNT_MAPPINGS = [
+    {"key": "sale_completed.cash_debit", "event_type": "sale_completed", "role": "cash_debit", "account_code": "1000", "description": "Debit cash/payment clearing when sale is completed."},
+    {"key": "sale_completed.sales_credit", "event_type": "sale_completed", "role": "sales_credit", "account_code": "4000", "description": "Credit sales revenue."},
+    {"key": "sale_completed.discount_debit", "event_type": "sale_completed", "role": "discount_debit", "account_code": "4100", "description": "Debit sales discount when present."},
+    {"key": "sale_completed.cogs_debit", "event_type": "sale_completed", "role": "cogs_debit", "account_code": "5000", "description": "Debit COGS when available."},
+    {"key": "sale_completed.inventory_credit", "event_type": "sale_completed", "role": "inventory_credit", "account_code": "1200", "description": "Credit inventory for COGS."},
+
+    {"key": "sale_voided.sales_debit", "event_type": "sale_voided", "role": "sales_debit", "account_code": "4000", "description": "Reverse sales revenue."},
+    {"key": "sale_voided.cash_credit", "event_type": "sale_voided", "role": "cash_credit", "account_code": "1000", "description": "Reverse cash/payment clearing."},
+    {"key": "sale_voided.inventory_debit", "event_type": "sale_voided", "role": "inventory_debit", "account_code": "1200", "description": "Restore inventory when voided."},
+    {"key": "sale_voided.cogs_credit", "event_type": "sale_voided", "role": "cogs_credit", "account_code": "5000", "description": "Reverse COGS."},
+
+    {"key": "purchase_order_received.inventory_debit", "event_type": "purchase_order_received", "role": "inventory_debit", "account_code": "1200", "description": "Debit inventory when PO is received."},
+    {"key": "purchase_order_received.ap_credit", "event_type": "purchase_order_received", "role": "ap_credit", "account_code": "2000", "description": "Credit accounts payable."},
+
+    {"key": "cash_movement_created.cash", "event_type": "cash_movement_created", "role": "cash", "account_code": "1000", "description": "Cash account for in/out movement."},
+    {"key": "cash_movement_created.offset", "event_type": "cash_movement_created", "role": "offset", "account_code": "6200", "description": "Offset account for cash movement."},
+
+    {"key": "stock_adjusted.inventory", "event_type": "stock_adjusted", "role": "inventory", "account_code": "1200", "description": "Inventory account for stock adjustment."},
+    {"key": "stock_adjusted.offset", "event_type": "stock_adjusted", "role": "offset", "account_code": "6300", "description": "Inventory adjustment offset."},
+
+    {"key": "expense_created.expense_debit", "event_type": "expense_created", "role": "expense_debit", "account_code": "6000", "description": "Default expense account."},
+    {"key": "expense_created.payment_credit", "event_type": "expense_created", "role": "payment_credit", "account_code": "1000", "description": "Payment account for expense."},
+
+    {"key": "payment_settlement_created.bank_debit", "event_type": "payment_settlement_created", "role": "bank_debit", "account_code": "1010", "description": "Bank account receiving settlement."},
+    {"key": "payment_settlement_created.fee_debit", "event_type": "payment_settlement_created", "role": "fee_debit", "account_code": "6100", "description": "Payment fee expense."},
+    {"key": "payment_settlement_created.clearing_credit", "event_type": "payment_settlement_created", "role": "clearing_credit", "account_code": "1000", "description": "Clear payment clearing balance."},
+
+    {"key": "supplier_payment_recorded.ap_debit", "event_type": "supplier_payment_recorded", "role": "ap_debit", "account_code": "2000", "description": "Debit accounts payable."},
+    {"key": "supplier_payment_recorded.payment_credit", "event_type": "supplier_payment_recorded", "role": "payment_credit", "account_code": "1000", "description": "Credit cash/bank payment account."},
+]
+
+
+def _read_json_file(path: Path, default_value: Any) -> Any:
+    if not path.exists():
+        return default_value
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return default_value
+
+
+def _write_json_file(path: Path, value: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, ensure_ascii=False, indent=2, default=_json_default), encoding="utf-8")
+
+
+def _seed_accounting_settings_if_missing() -> Dict[str, Any]:
+    created = {"chart_of_accounts": False, "account_mappings": False}
+
+    if not CHART_OF_ACCOUNTS_STORE_PATH.exists():
+        _write_json_file(CHART_OF_ACCOUNTS_STORE_PATH, DEFAULT_CHART_OF_ACCOUNTS)
+        created["chart_of_accounts"] = True
+
+    if not ACCOUNT_MAPPING_STORE_PATH.exists():
+        _write_json_file(ACCOUNT_MAPPING_STORE_PATH, DEFAULT_ACCOUNT_MAPPINGS)
+        created["account_mappings"] = True
+
+    return created
+
+
+def _chart_of_accounts() -> list[Dict[str, Any]]:
+    _seed_accounting_settings_if_missing()
+    rows = _read_json_file(CHART_OF_ACCOUNTS_STORE_PATH, DEFAULT_CHART_OF_ACCOUNTS)
+    return sorted(rows, key=lambda x: str(x.get("code") or ""))
+
+
+def _account_mappings() -> list[Dict[str, Any]]:
+    _seed_accounting_settings_if_missing()
+    rows = _read_json_file(ACCOUNT_MAPPING_STORE_PATH, DEFAULT_ACCOUNT_MAPPINGS)
+    accounts = {str(a.get("code")): a for a in _chart_of_accounts()}
+    enriched = []
+    for row in rows:
+        item = dict(row)
+        account = accounts.get(str(item.get("account_code")))
+        item["account_name"] = account.get("name") if account else None
+        item["account_type"] = account.get("type") if account else None
+        item["valid_account"] = bool(account)
+        enriched.append(item)
+    return sorted(enriched, key=lambda x: (str(x.get("event_type") or ""), str(x.get("role") or "")))
+
+
+@app.get("/api/v1/settings/chart-of-accounts")
+def get_chart_of_accounts_public() -> Dict[str, Any]:
+    accounts = _chart_of_accounts()
+    active = [a for a in accounts if a.get("active", True)]
+    return {
+        "ok": True,
+        "count": len(accounts),
+        "active_count": len(active),
+        "items": accounts,
+        "note": "Chart of accounts settings. Public metadata only.",
+    }
+
+
+@app.get("/api/v1/settings/account-mappings")
+def get_account_mappings_public() -> Dict[str, Any]:
+    mappings = _account_mappings()
+    invalid = [m for m in mappings if not m.get("valid_account")]
+    return {
+        "ok": True,
+        "count": len(mappings),
+        "invalid_count": len(invalid),
+        "items": mappings,
+        "note": "Event-to-account mapping settings. Preview builders still use current hardcoded/default mapping until B24.",
+    }
+
+
+@app.post("/api/v1/settings/seed-defaults")
+def seed_accounting_settings_defaults(_: None = Depends(require_internal_key)) -> Dict[str, Any]:
+    created = _seed_accounting_settings_if_missing()
+    return {
+        "ok": True,
+        "created": created,
+        "chart_of_accounts": {
+            "count": len(_chart_of_accounts()),
+            "path": str(CHART_OF_ACCOUNTS_STORE_PATH),
+        },
+        "account_mappings": {
+            "count": len(_account_mappings()),
+            "path": str(ACCOUNT_MAPPING_STORE_PATH),
+        },
+    }
+
+
+@app.put("/api/v1/settings/chart-of-accounts/{account_code}")
+def upsert_chart_of_account(account_code: str, body: Dict[str, Any], _: None = Depends(require_internal_key)) -> Dict[str, Any]:
+    if not account_code.strip():
+        raise HTTPException(status_code=400, detail="account_code is required")
+
+    rows = _chart_of_accounts()
+    now = now_iso()
+    found = False
+    allowed_types = {"asset", "liability", "equity", "revenue", "contra_revenue", "expense"}
+
+    account_type = body.get("type") or "expense"
+    if account_type not in allowed_types:
+        raise HTTPException(status_code=400, detail=f"Invalid account type: {account_type}")
+
+    new_row = {
+        "code": account_code,
+        "name": body.get("name") or account_code,
+        "type": account_type,
+        "normal_balance": body.get("normal_balance") or ("credit" if account_type in {"liability", "equity", "revenue"} else "debit"),
+        "active": bool(body.get("active", True)),
+        "description": body.get("description") or "",
+        "updated_at": now,
+    }
+
+    for idx, row in enumerate(rows):
+        if str(row.get("code")) == str(account_code):
+            rows[idx] = {**row, **new_row}
+            found = True
+            break
+
+    if not found:
+        new_row["created_at"] = now
+        rows.append(new_row)
+
+    _write_json_file(CHART_OF_ACCOUNTS_STORE_PATH, sorted(rows, key=lambda x: str(x.get("code") or "")))
+    return {"ok": True, "created": not found, "account": new_row}
+
+
+@app.put("/api/v1/settings/account-mappings/{mapping_key}")
+def upsert_account_mapping(mapping_key: str, body: Dict[str, Any], _: None = Depends(require_internal_key)) -> Dict[str, Any]:
+    if not mapping_key.strip():
+        raise HTTPException(status_code=400, detail="mapping_key is required")
+
+    rows = _account_mappings()
+    accounts = {str(a.get("code")): a for a in _chart_of_accounts()}
+    account_code = str(body.get("account_code") or "")
+
+    if account_code not in accounts:
+        raise HTTPException(status_code=400, detail=f"Account code not found: {account_code}")
+
+    now = now_iso()
+    found = False
+    new_row = {
+        "key": mapping_key,
+        "event_type": body.get("event_type") or mapping_key.split(".")[0],
+        "role": body.get("role") or mapping_key.split(".")[-1],
+        "account_code": account_code,
+        "description": body.get("description") or "",
+        "updated_at": now,
+    }
+
+    raw_rows = _read_json_file(ACCOUNT_MAPPING_STORE_PATH, DEFAULT_ACCOUNT_MAPPINGS)
+    for idx, row in enumerate(raw_rows):
+        if str(row.get("key")) == str(mapping_key):
+            raw_rows[idx] = {**row, **new_row}
+            found = True
+            break
+
+    if not found:
+        new_row["created_at"] = now
+        raw_rows.append(new_row)
+
+    _write_json_file(ACCOUNT_MAPPING_STORE_PATH, sorted(raw_rows, key=lambda x: (str(x.get("event_type") or ""), str(x.get("role") or ""))))
+    return {"ok": True, "created": not found, "mapping": new_row}
+

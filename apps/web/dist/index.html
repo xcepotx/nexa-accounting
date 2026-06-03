@@ -213,6 +213,7 @@
         <a href="#drafts" data-route="drafts"><span class="icon">✎</span> Draft Journals</a>
         <a href="#ledger" data-route="ledger"><span class="icon">▦</span> Simulated Ledger</a>
         <a href="#reports" data-route="reports"><span class="icon">▤</span> Reports</a>
+        <a href="#settings" data-route="settings"><span class="icon">⚙</span> Settings</a>
       </nav>
 
       <div class="sidebar-foot">
@@ -358,6 +359,27 @@
             <div id="event-summary-table"></div>
           </div>
         </div>
+      <section id="route-settings" class="route">
+        <div class="toolbar">
+          <button class="button primary" onclick="runProtectedAction('Seed COA Defaults', '/api/v1/settings/seed-defaults', {})">Seed Defaults</button>
+          <button class="button dark" onclick="reloadAll()">Refresh Settings</button>
+        </div>
+        <div class="split">
+          <div class="card">
+            <div class="section-title">
+              <div><h2>Chart of Accounts</h2><p>Default account master used by the simulated accounting pipeline.</p></div>
+            </div>
+            <div id="coa-table"></div>
+          </div>
+          <div class="card">
+            <div class="section-title">
+              <div><h2>POS Event Mapping</h2><p>Mapping roles from NexaPOS events to accounting accounts. B24 will wire previews to use this dynamically.</p></div>
+            </div>
+            <div id="mapping-table"></div>
+          </div>
+        </div>
+      </section>
+
       </section>
     </main>
   </div>
@@ -371,6 +393,8 @@ const state = {
   ledgerEntries: [],
   ledgerSummary: null,
   trialBalance: null,
+  chartAccounts: [],
+  accountMappings: [],
 };
 
 const routeMeta = {
@@ -380,6 +404,7 @@ const routeMeta = {
   drafts: ["Draft Journals", "Draft Journal Queue", "Review persistent draft journals and simulated posting status."],
   ledger: ["Simulated Ledger", "Simulated Ledger Store", "Inspect materialized simulated journal entries."],
   reports: ["Reports", "Accounting Reports", "Trial balance and ledger health checks."],
+  settings: ["Settings", "Chart of Accounts & Mapping", "Manage account master data and POS event mapping."],
 };
 
 function escapeHtml(value){
@@ -515,7 +540,7 @@ function setSelectOptions(id, values){
 async function reloadAll(){
   document.querySelector("#api-status span:last-child").textContent = "Loading...";
   try{
-    const [health, eventsStatus, previews, drafts, ledgerEntries, ledgerSummary, trialBalance] = await Promise.all([
+    const [health, eventsStatus, previews, drafts, ledgerEntries, ledgerSummary, trialBalance, chartAccounts, accountMappings] = await Promise.all([
       fetchJson("/api/health"),
       fetchJson("/api/v1/events/status?limit=300"),
       fetchJson("/api/v1/journal-preview/queue?limit=300"),
@@ -523,6 +548,8 @@ async function reloadAll(){
       fetchJson("/api/v1/simulated-ledger/entries"),
       fetchJson("/api/v1/simulated-ledger/summary"),
       fetchJson("/api/v1/reports/trial-balance-simulated"),
+      fetchJson("/api/v1/settings/chart-of-accounts"),
+      fetchJson("/api/v1/settings/account-mappings"),
     ]);
 
     state.health = health;
@@ -532,6 +559,8 @@ async function reloadAll(){
     state.ledgerEntries = ledgerEntries.items || [];
     state.ledgerSummary = ledgerSummary;
     state.trialBalance = trialBalance;
+    state.chartAccounts = chartAccounts.items || [];
+    state.accountMappings = accountMappings.items || [];
 
     document.querySelector("#api-status").style.background = "#ecfdf5";
     document.querySelector("#api-status").style.color = "#166534";
@@ -577,6 +606,7 @@ function renderCurrentRoute(){
   if(route === "drafts") renderDrafts();
   if(route === "ledger") renderLedger();
   if(route === "reports") renderReports();
+  if(route === "settings") renderSettings();
 }
 
 
@@ -764,6 +794,37 @@ function renderLedger(){
   document.getElementById("ledger-table").innerHTML = table([
     {label:"Status"},{label:"Type"},{label:"Source"},{label:"Amount",right:true},{label:"Debit",right:true},{label:"Credit",right:true},{label:"Lines",right:true},{label:"Balance"}
   ], rows);
+}
+
+
+function renderSettings(){
+  const accountRows = (state.chartAccounts || []).map(a=>`
+    <tr>
+      <td class="mono">${escapeHtml(a.code)}</td>
+      <td>${escapeHtml(a.name)}</td>
+      <td>${badge(a.type || "-","blue")}</td>
+      <td>${escapeHtml(a.normal_balance || "-")}</td>
+      <td>${a.active === false ? badge("inactive","warn") : badge("active","ok")}</td>
+      <td>${escapeHtml(a.description || "")}</td>
+    </tr>
+  `);
+  document.getElementById("coa-table").innerHTML = table([
+    {label:"Code"},{label:"Name"},{label:"Type"},{label:"Normal"},{label:"Status"},{label:"Description"}
+  ], accountRows);
+
+  const mappingRows = (state.accountMappings || []).map(m=>`
+    <tr>
+      <td class="mono">${escapeHtml(m.key)}</td>
+      <td>${escapeHtml(m.event_type)}</td>
+      <td>${escapeHtml(m.role)}</td>
+      <td class="mono">${escapeHtml(m.account_code)}</td>
+      <td>${escapeHtml(m.account_name || "-")}</td>
+      <td>${m.valid_account ? badge("valid","ok") : badge("invalid","bad")}</td>
+    </tr>
+  `);
+  document.getElementById("mapping-table").innerHTML = table([
+    {label:"Key"},{label:"Event Type"},{label:"Role"},{label:"Account"},{label:"Account Name"},{label:"Valid"}
+  ], mappingRows);
 }
 
 function renderReports(){
