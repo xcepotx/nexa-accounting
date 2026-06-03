@@ -94,6 +94,29 @@
       font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;
     }
     .action-log.active{display:block}
+
+    .action-summary-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px}
+    .action-summary-card{
+      background:#fff;border:1px solid var(--line);border-radius:16px;padding:12px;
+      min-height:74px;
+    }
+    .action-summary-card .label{
+      font-size:10px;text-transform:uppercase;letter-spacing:.12em;
+      color:#64748b;font-weight:950;
+    }
+    .action-summary-card .value{
+      font-size:22px;font-weight:950;color:#0f172a;margin-top:5px;letter-spacing:-.04em;
+    }
+    .action-summary-card .hint{font-size:11px;color:#64748b;margin-top:4px;line-height:1.35}
+    .action-guidance{
+      display:grid;gap:8px;background:#f8fafc;border:1px solid var(--line);
+      border-radius:16px;padding:12px;font-size:12px;color:#475569;line-height:1.5;
+    }
+    .action-guidance strong{color:#0f172a}
+    .button.primary{background:#2563eb;color:#fff;border-color:#2563eb}
+    @media(max-width:1100px){.action-summary-grid{grid-template-columns:1fr 1fr}}
+    @media(max-width:640px){.action-summary-grid{grid-template-columns:1fr}}
+
     .button.green{background:#ecfdf5;color:#166534;border-color:#bbf7d0}
     .button.orange{background:#fff7ed;color:#c2410c;border-color:#fed7aa}
     .button.red{background:#fff1f2;color:#be123c;border-color:#fecdd3}
@@ -218,9 +241,14 @@
         </div>
         <div class="action-row">
           <button class="button dark" onclick="reloadAll()">Refresh Console</button>
-          <button class="button" onclick="runProtectedAction('Generate Drafts', '/api/v1/journal-drafts/generate-from-previews', {})">Generate Drafts</button>
-          <button class="button orange" onclick="runProtectedAction('Post All Simulated', '/api/v1/journal-drafts/post-all-simulated', {posted_by:'console', note:'B21 console post all simulated'})">Post All Simulated</button>
+          <button class="button primary" onclick="runProtectedAction('Generate Drafts', '/api/v1/journal-drafts/generate-from-previews', {})">Generate Drafts</button>
+          <button class="button orange" onclick="runProtectedAction('Post All Simulated', '/api/v1/journal-drafts/post-all-simulated', {posted_by:'console', note:'B22 console post all simulated'})">Post All Simulated</button>
           <button class="button green" onclick="runProtectedAction('Materialize Ledger', '/api/v1/simulated-ledger/materialize-posted-drafts', {})">Materialize Ledger</button>
+        </div>
+        <div class="action-summary-grid" id="action-summary"></div>
+        <div class="action-guidance" id="action-guidance">
+          <div><strong>Suggested flow:</strong> Generate Drafts → Post All Simulated → Materialize Ledger → Refresh Console.</div>
+          <div class="muted">Protected actions require the Operator Key. The key is only stored locally in this browser.</div>
         </div>
         <div class="action-log" id="action-log"></div>
       </div>
@@ -512,6 +540,7 @@ async function reloadAll(){
 
     hydrateFilters();
     renderCurrentRoute();
+    renderActionSummary();
   }catch(err){
     console.error(err);
     document.querySelector("#api-status").style.background = "#fff1f2";
@@ -550,16 +579,74 @@ function renderCurrentRoute(){
   if(route === "reports") renderReports();
 }
 
+
+function renderActionSummary(){
+  const events = state.events || [];
+  const previews = state.previews || [];
+  const drafts = state.drafts || [];
+  const ledgerEntries = state.ledgerEntries || [];
+
+  const pendingDrafts = drafts.filter(d => d.status !== "posted_simulated").length;
+  const postedDrafts = drafts.filter(d => d.status === "posted_simulated").length;
+  const ledgerDraftIds = new Set(ledgerEntries.map(e => e.draft_id).filter(Boolean));
+  const needMaterialize = drafts.filter(d => d.status === "posted_simulated" && !ledgerDraftIds.has(d.id)).length;
+
+  const summaryEl = document.getElementById("action-summary");
+  if(summaryEl){
+    summaryEl.innerHTML = [
+      actionSummaryCard("Events", events.length, "Received from NexaPOS"),
+      actionSummaryCard("Previews", previews.length, "Generated journal previews"),
+      actionSummaryCard("Pending Drafts", pendingDrafts, pendingDrafts ? "Run Post All Simulated" : "No draft pending"),
+      actionSummaryCard("Posted Drafts", postedDrafts, "Ready for ledger materialization"),
+      actionSummaryCard("Need Ledger", needMaterialize, needMaterialize ? "Run Materialize Ledger" : "Ledger caught up"),
+    ].join("");
+  }
+
+  const guidance = document.getElementById("action-guidance");
+  if(guidance){
+    let message = "";
+    if(previews.length > drafts.length){
+      message = "<strong>Next suggested action:</strong> Generate Drafts because previews are ahead of persistent drafts.";
+    }else if(pendingDrafts > 0){
+      message = "<strong>Next suggested action:</strong> Post All Simulated because there are pending draft journals.";
+    }else if(needMaterialize > 0){
+      message = "<strong>Next suggested action:</strong> Materialize Ledger because posted drafts are not yet in simulated ledger.";
+    }else{
+      message = "<strong>Status:</strong> Draft and simulated ledger pipeline looks caught up.";
+    }
+
+    guidance.innerHTML = `
+      <div>${message}</div>
+      <div class="muted">Protected actions require the Operator Key. Suggested flow: Generate Drafts → Post All Simulated → Materialize Ledger → Refresh Console.</div>
+    `;
+  }
+}
+function actionSummaryCard(label, value, hint){
+  const warn = Number(value || 0) > 0 && ["Pending Drafts","Need Ledger"].includes(label);
+  return `
+    <div class="action-summary-card">
+      <div class="label">${escapeHtml(label)}</div>
+      <div class="value" style="${warn ? 'color:#c2410c' : ''}">${escapeHtml(value)}</div>
+      <div class="hint">${escapeHtml(hint || "")}</div>
+    </div>
+  `;
+}
+
 function renderDashboard(){
   const ledgerSummary = state.ledgerSummary?.summary || {};
   const tb = state.trialBalance?.summary || {};
   const eventCounts = {};
   state.events.forEach(e=>{const t=e.event_type||"unknown";eventCounts[t]=(eventCounts[t]||0)+1});
+  const pendingDrafts = state.drafts.filter(d => d.status !== "posted_simulated").length;
+  const postedDrafts = state.drafts.filter(d => d.status === "posted_simulated").length;
+  const ledgerDraftIds = new Set(state.ledgerEntries.map(e => e.draft_id).filter(Boolean));
+  const needMaterialize = state.drafts.filter(d => d.status === "posted_simulated" && !ledgerDraftIds.has(d.id)).length;
+
   document.getElementById("dashboard-metrics").innerHTML = [
     metric("Events", state.events.length, "POS events tracked"),
     metric("Previews", state.previews.length, "Journal previews generated"),
-    metric("Drafts", state.drafts.length, "Persistent journal drafts"),
-    metric("Ledger Entries", ledgerSummary.entry_count || state.ledgerEntries.length, "Simulated posted entries"),
+    metric("Pending Drafts", pendingDrafts, pendingDrafts ? "Need simulated posting" : "No draft pending"),
+    metric("Need Ledger", needMaterialize, needMaterialize ? "Need materialization" : "Ledger caught up"),
   ].join("");
 
   const latest = state.events.slice(0,8).map(e=>`
@@ -578,8 +665,8 @@ function renderDashboard(){
     <div class="grid cards" style="grid-template-columns:1fr 1fr">
       ${metric("Ledger Balance", ledgerSummary.balanced ? "Balanced" : "Unbalanced", "Difference: " + money(ledgerSummary.difference))}
       ${metric("Trial Balance", tb.balanced ? "Balanced" : "Unbalanced", "Ending diff: " + money(tb.ending_difference))}
-      ${metric("Total Debit", money(ledgerSummary.total_debit), "Simulated ledger")}
-      ${metric("Total Credit", money(ledgerSummary.total_credit), "Simulated ledger")}
+      ${metric("Posted Drafts", postedDrafts, "Posted simulated journals")}
+      ${metric("Ledger Entries", ledgerSummary.entry_count || state.ledgerEntries.length, "Materialized simulated entries")}
     </div>
   `;
 }
