@@ -23,6 +23,11 @@
     .status{display:inline-flex;gap:8px;align-items:center;padding:8px 12px;border-radius:999px;background:#ecfdf5;color:#047857;font-size:12px;font-weight:800}
     .dot{width:8px;height:8px;background:#10b981;border-radius:50%}.footer{margin-top:24px;color:#64748b;font-size:12px}
     @media(max-width:900px){.shell{display:block}aside{width:auto}.grid{grid-template-columns:1fr}main{padding:20px}h1{font-size:34px}}
+  
+    .trial-balance{margin-top:22px;background:white;border:1px solid #e2e8f0;border-radius:24px;padding:22px;box-shadow:0 10px 30px rgba(15,23,42,.05)}
+    .trial-balance h2{margin:0;font-size:18px;letter-spacing:-.02em}
+    .trial-balance p{margin:6px 0 0;color:#64748b;font-size:13px;line-height:1.6}
+
   </style>
 </head>
 <body>
@@ -83,6 +88,17 @@
           <div id="journal-draft-count" class="pill">Loading...</div>
         </div>
         <div id="journal-draft-body" class="empty">Loading draft journals...</div>
+      </section>
+
+      <section class="trial-balance">
+        <div class="events-head">
+          <div>
+            <h2>Trial Balance</h2>
+            <p>Simulated trial balance generated from posted simulated ledger lines.</p>
+          </div>
+          <div id="trial-balance-status" class="pill">Loading...</div>
+        </div>
+        <div id="trial-balance-body" class="empty">Loading trial balance...</div>
       </section>
 
       <section class="ledger-summary">
@@ -400,7 +416,63 @@
     }
 
     loadSimulatedLedgerStore();
+
+    function loadTrialBalance() {
+      fetch("/api/v1/reports/trial-balance-simulated")
+        .then(r => r.json())
+        .then(data => {
+          const summary = data && data.summary ? data.summary : {};
+          const rows = data && Array.isArray(data.rows) ? data.rows : [];
+
+          document.querySelector("#trial-balance-status").textContent = summary.balanced ? "Balanced" : "Unbalanced";
+
+          const bodyRows = rows.map((row) => `
+            <tr>
+              <td>${escapeHtml(row.account_code || "-")}</td>
+              <td>${escapeHtml(row.account_name || "-")}</td>
+              <td class="right">${money(row.debit)}</td>
+              <td class="right">${money(row.credit)}</td>
+              <td class="right">${money(row.ending_debit)}</td>
+              <td class="right">${money(row.ending_credit)}</td>
+            </tr>
+          `).join("");
+
+          document.querySelector("#trial-balance-body").className = "";
+          document.querySelector("#trial-balance-body").innerHTML = `
+            <div class="summary-metrics">
+              <div class="summary-metric"><div class="label">Accounts</div><div class="value">${summary.account_count || 0}</div></div>
+              <div class="summary-metric"><div class="label">Entries</div><div class="value">${summary.entry_count || 0}</div></div>
+              <div class="summary-metric"><div class="label">Ending Dr</div><div class="value">${money(summary.ending_debit)}</div></div>
+              <div class="summary-metric"><div class="label">Ending Cr</div><div class="value">${money(summary.ending_credit)}</div></div>
+            </div>
+
+            <div class="summary-block">
+              <h3>Trial Balance Rows</h3>
+              <table class="line-table">
+                <thead>
+                  <tr>
+                    <th>Code</th>
+                    <th>Account</th>
+                    <th class="right">Movement Dr</th>
+                    <th class="right">Movement Cr</th>
+                    <th class="right">Ending Dr</th>
+                    <th class="right">Ending Cr</th>
+                  </tr>
+                </thead>
+                <tbody>${bodyRows}</tbody>
+              </table>
+            </div>
+          `;
+        })
+        .catch(() => {
+          document.querySelector("#trial-balance-status").textContent = "Offline";
+          document.querySelector("#trial-balance-body").className = "empty";
+          document.querySelector("#trial-balance-body").textContent = "Could not load trial balance.";
+        });
+    }
+
     loadLedgerSummary();
+    loadTrialBalance();
   </script>
 </body>
 </html>

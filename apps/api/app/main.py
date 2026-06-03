@@ -965,3 +965,67 @@ def simulated_ledger_summary() -> Dict[str, Any]:
         "note": "Simulated ledger summary only. Permanent accounting ledger is not enabled yet.",
     }
 
+@app.get("/api/v1/reports/trial-balance-simulated")
+def simulated_trial_balance_report() -> Dict[str, Any]:
+    lines = _read_jsonl_chronological(SIM_LEDGER_LINE_STORE_PATH, limit=100000)
+    entries = _read_jsonl_chronological(SIM_LEDGER_ENTRY_STORE_PATH, limit=50000)
+
+    grouped = {}
+    for line in lines:
+        code = str(line.get("account_code") or "-")
+        name = str(line.get("account_name") or "Unknown Account")
+        key = f"{code}:{name}"
+
+        if key not in grouped:
+            grouped[key] = {
+                "account_code": code,
+                "account_name": name,
+                "debit": 0.0,
+                "credit": 0.0,
+                "ending_debit": 0.0,
+                "ending_credit": 0.0,
+                "line_count": 0,
+            }
+
+        row = grouped[key]
+        row["debit"] = _money(row["debit"] + _money(line.get("debit")))
+        row["credit"] = _money(row["credit"] + _money(line.get("credit")))
+        row["line_count"] += 1
+
+    for row in grouped.values():
+        net = _money(row["debit"] - row["credit"])
+        if net >= 0:
+            row["ending_debit"] = net
+            row["ending_credit"] = 0.0
+        else:
+            row["ending_debit"] = 0.0
+            row["ending_credit"] = abs(net)
+
+    rows = sorted(grouped.values(), key=lambda x: str(x.get("account_code") or ""))
+
+    totals = {
+        "debit": _money(sum(row["debit"] for row in rows)),
+        "credit": _money(sum(row["credit"] for row in rows)),
+        "ending_debit": _money(sum(row["ending_debit"] for row in rows)),
+        "ending_credit": _money(sum(row["ending_credit"] for row in rows)),
+    }
+    totals["movement_difference"] = _money(totals["debit"] - totals["credit"])
+    totals["ending_difference"] = _money(totals["ending_debit"] - totals["ending_credit"])
+
+    return {
+        "ok": True,
+        "report": "trial_balance_simulated",
+        "basis": "simulated_ledger",
+        "summary": {
+            "account_count": len(rows),
+            "entry_count": len(entries),
+            "line_count": len(lines),
+            "movement_balanced": totals["movement_difference"] == 0,
+            "ending_balanced": totals["ending_difference"] == 0,
+            "balanced": totals["movement_difference"] == 0 and totals["ending_difference"] == 0,
+            **totals,
+        },
+        "rows": rows,
+        "note": "Simulated trial balance only. Permanent accounting ledger is not enabled yet.",
+    }
+
