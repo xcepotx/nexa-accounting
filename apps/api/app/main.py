@@ -17,6 +17,8 @@ APP_ENV = os.getenv("APP_ENV", "production")
 INTERNAL_API_KEY = os.getenv("INTERNAL_API_KEY", "")
 EVENT_STORE_PATH = Path(os.getenv("EVENT_STORE_PATH", "/tmp/nexa_accounting_events.jsonl"))
 JOURNAL_DRAFT_STORE_PATH = Path(os.getenv("JOURNAL_DRAFT_STORE_PATH", "/data/accounting/app/nexa-accounting/data/journal_drafts.jsonl"))
+SIM_LEDGER_ENTRY_STORE_PATH = Path(os.getenv("SIM_LEDGER_ENTRY_STORE_PATH", "/data/accounting/app/nexa-accounting/data/sim_ledger_entries.jsonl"))
+SIM_LEDGER_LINE_STORE_PATH = Path(os.getenv("SIM_LEDGER_LINE_STORE_PATH", "/data/accounting/app/nexa-accounting/data/sim_ledger_lines.jsonl"))
 
 app = FastAPI(title=APP_NAME, version="0.1.0")
 
@@ -517,11 +519,16 @@ def post_journal_draft_simulated(draft_id: str, body: Optional[Dict[str, Any]] =
             continue
 
         if draft.get("status") == "posted_simulated":
+            ledger_result = _materialize_simulated_ledger_from_draft(
+                draft,
+                posted_by=draft.get("posted_simulated_by") or body.get("posted_by") or "system",
+            )
             return {
                 "ok": True,
                 "status": "already_posted_simulated",
                 "draft": draft,
                 "summary": _public_journal_draft_summary(draft),
+                "ledger_result": ledger_result.get("summary"),
             }
 
         if draft.get("status") not in {"draft", "reviewed", None}:
@@ -542,13 +549,18 @@ def post_journal_draft_simulated(draft_id: str, body: Optional[Dict[str, Any]] =
         raise HTTPException(status_code=404, detail="Journal draft not found")
 
     _write_journal_drafts_chronological(drafts)
+    ledger_result = _materialize_simulated_ledger_from_draft(
+        updated,
+        posted_by=updated.get("posted_simulated_by") or "system",
+    )
 
     return {
         "ok": True,
         "status": "posted_simulated",
         "draft": updated,
         "summary": _public_journal_draft_summary(updated),
-        "note": "State transition only. No permanent ledger posting was performed.",
+        "ledger_result": ledger_result.get("summary"),
+        "note": "State transition plus simulated ledger materialization. No permanent ledger posting was performed.",
     }
 
 
@@ -568,5 +580,211 @@ def post_first_draft_simulated(_: None = Depends(require_internal_key)) -> Dict[
         "ok": True,
         "status": "no_draft_available",
         "message": "No draft journal is available for simulated posting.",
+    }
+
+def _read_jsonl_chronological(path: Path, limit: int = 10000) -> list[Dict[str, Any]]:
+    if not path.exists():
+        return []
+
+    rows = []
+    for line in path.read_text(encoding="utf-8").splitlines()[-limit:]:
+        try:
+            rows.append(json.loads(line))
+        except Exception:
+            continue
+
+    return rows
+
+
+def _append_jsonl(path: Path, row: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(row, ensure_ascii=False, default=_json_default) + "\n")
+
+
+def _ledger_entry_key(draft: Dict[str, Any]) -> str:
+    return f"simledger:{draft.get('draft_key') or draft.get('id') or 'unknown'}"
+
+
+def _ledger_entry_id(entry_key: str) -> str:
+    return f"le_{hashlib.sha1(entry_key.encode('utf-8')).hexdigest()[:16]}"
+
+
+def _existing_simulated_ledger_entry(entry_key: str) -> Optional[Dict[str, Any]]:
+    for entry in _read_jsonl_chronological(SIM_LEDGER_ENTRY_STORE_PATH, limit=20000):
+        if entry.get("entry_key") == entry_key:
+            return entry
+    return None
+
+
+def _simulated_ledger_counts() -> Dict[str, int]:
+    return {
+        "entries": len(_read_jsonl_chronological(SIM_LEDGER_ENTRY_STORE_PATH, limit=50000)),
+        "lines": len(_read_jsonl_chronological(SIM_LEDGER_LINE_STORE_PATH, limit=100000)),
+    }
+
+
+def _public_simulated_ledger_entry_summary(entry: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "id": entry.get("id"),
+        "entry_key": entry.get("entry_key"),
+        "status": entry.get("status"),
+        "tenant_id": entry.get("tenant_id"),
+        "source": entry.get("source"),
+        "event_type": entry.get("event_type"),
+        "event_id": entry.get("event_id"),
+        "source_number": entry.get("source_number"),
+        "draft_id": entry.get("draft_id"),
+        "summary": entry.get("summary"),
+        "amount": entry.get("amount"),
+        "total_debit": entry.get("total_debit"),
+        "total_credit": entry.get("total_credit"),
+        "balanced": entry.get("balanced"),
+        "line_count": entry.get("line_count"),
+        "posted_simulated_at": entry.get("posted_simulated_at"),
+        "posted_simulated_by": entry.get("posted_simulated_by"),
+    }
+
+
+def _materialize_simulated_ledger_from_draft(draft: Dict[str, Any], posted_by: str = "system") -> Dict[str, Any]:
+    if not draft:
+        raise HTTPException(status_code=404, detail="Draft not found")
+
+    if not draft.get("balanced"):
+        raise HTTPException(status_code=400, detail="Unbalanced draft cannot be materialized to simulated ledger")
+
+    entry_key = _ledger_entry_key(draft)
+    existing = _existing_simulated_ledger_entry(entry_key)
+    if existing:
+        return {
+            "ok": True,
+            "status": "already_materialized",
+            "entry": existing,
+            "summary": _public_simulated_ledger_entry_summary(existing),
+        }
+
+    now = now_iso()
+    entry_id = _ledger_entry_id(entry_key)
+    lines = draft.get("lines") or []
+    total_debit = _money(sum(_money(line.get("debit")) for line in lines))
+    total_credit = _money(sum(_money(line.get("credit")) for line in lines))
+
+    entry = {
+        "id": entry_id,
+        "entry_key": entry_key,
+        "status": "posted_simulated",
+        "tenant_id": draft.get("tenant_id"),
+        "source": draft.get("source"),
+        "event_type": draft.get("event_type"),
+        "event_id": draft.get("event_id"),
+        "source_number": draft.get("source_number"),
+        "draft_id": draft.get("id"),
+        "draft_key": draft.get("draft_key"),
+        "summary": draft.get("summary"),
+        "amount": draft.get("amount"),
+        "total_debit": total_debit,
+        "total_credit": total_credit,
+        "balanced": _money(total_debit) == _money(total_credit),
+        "line_count": len(lines),
+        "posted_simulated_at": draft.get("posted_simulated_at") or now,
+        "posted_simulated_by": posted_by or draft.get("posted_simulated_by") or "system",
+        "created_at": now,
+        "updated_at": now,
+        "note": "Simulated ledger only. This is not a final accounting ledger posting.",
+    }
+
+    if not entry["balanced"]:
+        raise HTTPException(status_code=400, detail="Draft lines became unbalanced during materialization")
+
+    _append_jsonl(SIM_LEDGER_ENTRY_STORE_PATH, entry)
+
+    for index, line in enumerate(lines, start=1):
+        line_id_seed = f"{entry_id}:{index}:{line.get('account_code')}:{line.get('debit')}:{line.get('credit')}"
+        ledger_line = {
+            "id": f"ll_{hashlib.sha1(line_id_seed.encode('utf-8')).hexdigest()[:18]}",
+            "entry_id": entry_id,
+            "entry_key": entry_key,
+            "line_no": index,
+            "tenant_id": entry.get("tenant_id"),
+            "account_code": line.get("account_code"),
+            "account_name": line.get("account_name"),
+            "debit": _money(line.get("debit")),
+            "credit": _money(line.get("credit")),
+            "memo": line.get("memo"),
+            "source": entry.get("source"),
+            "event_type": entry.get("event_type"),
+            "event_id": entry.get("event_id"),
+            "draft_id": draft.get("id"),
+            "status": "posted_simulated",
+            "created_at": now,
+        }
+        _append_jsonl(SIM_LEDGER_LINE_STORE_PATH, ledger_line)
+
+    return {
+        "ok": True,
+        "status": "materialized",
+        "entry": entry,
+        "summary": _public_simulated_ledger_entry_summary(entry),
+    }
+
+
+@app.get("/api/v1/simulated-ledger/entries")
+def list_simulated_ledger_entries_public() -> Dict[str, Any]:
+    entries = list(reversed(_read_jsonl_chronological(SIM_LEDGER_ENTRY_STORE_PATH, limit=500)))
+    return {
+        "ok": True,
+        "count": len(entries),
+        "items": [_public_simulated_ledger_entry_summary(e) for e in entries],
+        "counts": _simulated_ledger_counts(),
+        "note": "Simulated ledger only. Permanent ledger posting is not enabled yet.",
+    }
+
+
+@app.get("/api/v1/simulated-ledger/lines")
+def list_simulated_ledger_lines_public(entry_id: Optional[str] = None) -> Dict[str, Any]:
+    lines = list(reversed(_read_jsonl_chronological(SIM_LEDGER_LINE_STORE_PATH, limit=2000)))
+    if entry_id:
+        lines = [line for line in lines if line.get("entry_id") == entry_id]
+
+    return {
+        "ok": True,
+        "count": len(lines),
+        "items": lines[:500],
+        "note": "Simulated ledger lines only.",
+    }
+
+
+@app.post("/api/v1/simulated-ledger/materialize-posted-drafts")
+def materialize_posted_drafts_to_simulated_ledger(_: None = Depends(require_internal_key)) -> Dict[str, Any]:
+    drafts = _read_journal_drafts_chronological(limit=10000)
+    created = []
+    skipped = []
+
+    for draft in drafts:
+        if draft.get("status") != "posted_simulated":
+            skipped.append({
+                "id": draft.get("id"),
+                "status": draft.get("status"),
+                "reason": "not_posted_simulated",
+            })
+            continue
+
+        result = _materialize_simulated_ledger_from_draft(draft, posted_by=draft.get("posted_simulated_by") or "system")
+        if result.get("status") == "materialized":
+            created.append(result.get("summary"))
+        else:
+            skipped.append({
+                "id": draft.get("id"),
+                "status": result.get("status"),
+                "reason": "already_materialized",
+            })
+
+    return {
+        "ok": True,
+        "created_count": len(created),
+        "skipped_count": len(skipped),
+        "created": created,
+        "skipped": skipped[:100],
+        "counts": _simulated_ledger_counts(),
     }
 

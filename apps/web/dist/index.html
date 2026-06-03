@@ -85,7 +85,18 @@
         <div id="journal-draft-body" class="empty">Loading draft journals...</div>
       </section>
 
-      <div class="footer"><strong>API:</strong> <code>/api/health</code> · <strong>Recent events:</strong> <code>/api/v1/events/recent-public</code> · <strong>Journal preview:</strong> <code>/api/v1/journal-preview/queue</code> · <strong>Drafts:</strong> <code>/api/v1/journal-drafts/public</code> · <strong>Source:</strong> /data/accounting/app/nexa-accounting</div>
+      <section class="ledger-store">
+        <div class="events-head">
+          <div>
+            <h2>Simulated Ledger Store</h2>
+            <p>Posted simulated journal entries and lines. This is still not a permanent accounting ledger.</p>
+          </div>
+          <div id="sim-ledger-count" class="pill">Loading...</div>
+        </div>
+        <div id="sim-ledger-body" class="empty">Loading simulated ledger entries...</div>
+      </section>
+
+      <div class="footer"><strong>API:</strong> <code>/api/health</code> · <strong>Recent events:</strong> <code>/api/v1/events/recent-public</code> · <strong>Journal preview:</strong> <code>/api/v1/journal-preview/queue</code> · <strong>Drafts:</strong> <code>/api/v1/journal-drafts/public</code> · <strong>Sim ledger:</strong> <code>/api/v1/simulated-ledger/entries</code> · <strong>Source:</strong> /data/accounting/app/nexa-accounting</div>
     </main>
   </div>
   <script>
@@ -266,7 +277,44 @@
     }
 
     loadJournalPreviewQueue();
+
+    function loadSimulatedLedgerStore() {
+      fetch("/api/v1/simulated-ledger/entries")
+        .then(r => r.json())
+        .then(data => {
+          const items = data && Array.isArray(data.items) ? data.items : [];
+          const counts = data && data.counts ? data.counts : {};
+          document.querySelector("#sim-ledger-count").textContent = (counts.entries || items.length) + " entries";
+
+          if (!items.length) {
+            document.querySelector("#sim-ledger-body").className = "empty";
+            document.querySelector("#sim-ledger-body").textContent = "No simulated ledger entries yet.";
+            return;
+          }
+
+          const html = `<div class="ledger-list">` + items.map((item) => `
+            <div class="ledger-item">
+              <div>
+                <div class="ledger-name">${escapeHtml(item.summary || item.event_type || "-")}</div>
+                <div class="ledger-meta">${escapeHtml(item.event_type || "-")} · ${escapeHtml(item.source_number || item.event_id || "-")} · ${escapeHtml(shortTime(item.posted_simulated_at))}</div>
+                <div class="ledger-meta">Debit ${Number(item.total_debit || 0).toLocaleString()} · Credit ${Number(item.total_credit || 0).toLocaleString()} · ${item.line_count || 0} lines · ${item.balanced ? "balanced" : "unbalanced"}</div>
+              </div>
+              <div class="draft-status posted">${escapeHtml(item.status || "posted_simulated")}</div>
+            </div>
+          `).join("") + `</div>`;
+
+          document.querySelector("#sim-ledger-body").className = "";
+          document.querySelector("#sim-ledger-body").innerHTML = html;
+        })
+        .catch(() => {
+          document.querySelector("#sim-ledger-count").textContent = "Offline";
+          document.querySelector("#sim-ledger-body").className = "empty";
+          document.querySelector("#sim-ledger-body").textContent = "Could not load simulated ledger store.";
+        });
+    }
+
     loadJournalDraftQueue();
+    loadSimulatedLedgerStore();
   </script>
 </body>
 </html>
