@@ -788,3 +788,95 @@ def materialize_posted_drafts_to_simulated_ledger(_: None = Depends(require_inte
         "counts": _simulated_ledger_counts(),
     }
 
+@app.post("/api/v1/journal-drafts/post-all-simulated")
+def post_all_journal_drafts_simulated(body: Optional[Dict[str, Any]] = None, _: None = Depends(require_internal_key)) -> Dict[str, Any]:
+    body = body or {}
+    drafts = _read_journal_drafts_chronological(limit=10000)
+
+    if not drafts:
+        return {
+            "ok": True,
+            "posted_count": 0,
+            "already_posted_count": 0,
+            "skipped_count": 0,
+            "ledger_materialized_count": 0,
+            "ledger_already_materialized_count": 0,
+            "message": "No journal drafts found.",
+        }
+
+    now = now_iso()
+    posted_by = body.get("posted_by") or "system"
+    note = body.get("note") or "B14 post all simulated"
+
+    posted = []
+    already_posted = []
+    skipped = []
+    ledger_materialized = []
+    ledger_already_materialized = []
+    changed = False
+
+    for draft in drafts:
+        status = draft.get("status")
+
+        if status == "posted_simulated":
+            already_posted.append(_public_journal_draft_summary(draft))
+            ledger_result = _materialize_simulated_ledger_from_draft(
+                draft,
+                posted_by=draft.get("posted_simulated_by") or posted_by,
+            )
+            if ledger_result.get("status") == "materialized":
+                ledger_materialized.append(ledger_result.get("summary"))
+            else:
+                ledger_already_materialized.append(ledger_result.get("summary"))
+            continue
+
+        if status not in {"draft", "reviewed", None}:
+            skipped.append({
+                "id": draft.get("id"),
+                "status": status,
+                "reason": "unsupported_status",
+            })
+            continue
+
+        if not draft.get("balanced"):
+            skipped.append({
+                "id": draft.get("id"),
+                "status": status,
+                "reason": "unbalanced",
+            })
+            continue
+
+        draft["status"] = "posted_simulated"
+        draft["posted_simulated_at"] = now
+        draft["posted_simulated_by"] = posted_by
+        draft["posting_note"] = note
+        draft["updated_at"] = now
+        changed = True
+
+        posted.append(_public_journal_draft_summary(draft))
+
+        ledger_result = _materialize_simulated_ledger_from_draft(draft, posted_by=posted_by)
+        if ledger_result.get("status") == "materialized":
+            ledger_materialized.append(ledger_result.get("summary"))
+        else:
+            ledger_already_materialized.append(ledger_result.get("summary"))
+
+    if changed:
+        _write_journal_drafts_chronological(drafts)
+
+    return {
+        "ok": True,
+        "posted_count": len(posted),
+        "already_posted_count": len(already_posted),
+        "skipped_count": len(skipped),
+        "ledger_materialized_count": len(ledger_materialized),
+        "ledger_already_materialized_count": len(ledger_already_materialized),
+        "posted": posted,
+        "already_posted": already_posted[:100],
+        "skipped": skipped[:100],
+        "ledger_materialized": ledger_materialized,
+        "ledger_already_materialized": ledger_already_materialized[:100],
+        "counts": _simulated_ledger_counts(),
+        "note": "All balanced drafts were posted_simulated and materialized to simulated ledger idempotently.",
+    }
+
