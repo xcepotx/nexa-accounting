@@ -63,7 +63,18 @@
         <div id="events-body" class="empty">Loading recent events...</div>
       </section>
 
-      <div class="footer"><strong>API:</strong> <code>/api/health</code> · <strong>Recent events:</strong> <code>/api/v1/events/recent-public</code> · <strong>Source:</strong> /data/accounting/app/nexa-accounting</div>
+      <section class="journal-preview">
+        <div class="events-head">
+          <div>
+            <h2>Journal Preview Queue</h2>
+            <p>Generated from NexaPOS events. This is preview only; ledger posting is not permanent yet.</p>
+          </div>
+          <div id="journal-preview-count" class="pill">Loading...</div>
+        </div>
+        <div id="journal-preview-body" class="empty">Loading journal previews...</div>
+      </section>
+
+      <div class="footer"><strong>API:</strong> <code>/api/health</code> · <strong>Recent events:</strong> <code>/api/v1/events/recent-public</code> · <strong>Journal preview:</strong> <code>/api/v1/journal-preview/queue</code> · <strong>Source:</strong> /data/accounting/app/nexa-accounting</div>
     </main>
   </div>
   <script>
@@ -146,7 +157,68 @@
         });
     }
 
+
+    function money(value) {
+      const n = Number(value || 0);
+      return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
+    }
+
+    function loadJournalPreviewQueue() {
+      fetch("/api/v1/journal-preview/queue")
+        .then(r => r.json())
+        .then(data => {
+          const items = data && Array.isArray(data.items) ? data.items : [];
+          document.querySelector("#journal-preview-count").textContent = items.length + " preview" + (items.length === 1 ? "" : "s");
+
+          if (!items.length) {
+            document.querySelector("#journal-preview-body").className = "empty";
+            document.querySelector("#journal-preview-body").textContent = "No journal previews available yet.";
+            return;
+          }
+
+          const html = items.map((item) => {
+            const lines = Array.isArray(item.lines) ? item.lines : [];
+            const lineRows = lines.map((line) => `
+              <tr>
+                <td>${escapeHtml(line.account_code || "-")}</td>
+                <td>${escapeHtml(line.account_name || "-")}</td>
+                <td class="right">${money(line.debit)}</td>
+                <td class="right">${money(line.credit)}</td>
+              </tr>
+            `).join("");
+
+            return `
+              <div class="preview-card">
+                <div class="preview-top">
+                  <div>
+                    <div class="preview-title">${escapeHtml(item.summary || item.event_type)}</div>
+                    <div class="preview-sub">${escapeHtml(item.event_type)} · ${escapeHtml(item.source_number || item.event_id || "-")} · ${escapeHtml(shortTime(item.received_at))}</div>
+                  </div>
+                  <div>
+                    <div class="amount">${money(item.amount)}</div>
+                    <div class="preview-sub">${item.balanced ? "Balanced" : "Unbalanced"}</div>
+                  </div>
+                </div>
+                <table class="line-table">
+                  <thead><tr><th>Code</th><th>Account</th><th class="right">Debit</th><th class="right">Credit</th></tr></thead>
+                  <tbody>${lineRows}</tbody>
+                </table>
+              </div>
+            `;
+          }).join("");
+
+          document.querySelector("#journal-preview-body").className = "";
+          document.querySelector("#journal-preview-body").innerHTML = html;
+        })
+        .catch(() => {
+          document.querySelector("#journal-preview-count").textContent = "Offline";
+          document.querySelector("#journal-preview-body").className = "empty";
+          document.querySelector("#journal-preview-body").textContent = "Could not load journal preview queue.";
+        });
+    }
+
     loadRecentEvents();
+    loadJournalPreviewQueue();
   </script>
 </body>
 </html>

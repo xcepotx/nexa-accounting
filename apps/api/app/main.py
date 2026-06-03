@@ -130,3 +130,184 @@ def recent_events_public() -> Dict[str, Any]:
         "note": "Public dashboard endpoint returns metadata only; payload values are not exposed.",
     }
 
+def _money(value: Any) -> float:
+    try:
+        return round(float(value or 0), 2)
+    except Exception:
+        return 0.0
+
+
+def _event_records(limit: int = 100) -> list[Dict[str, Any]]:
+    if not EVENT_STORE_PATH.exists():
+        return []
+
+    rows = []
+    for line in EVENT_STORE_PATH.read_text(encoding="utf-8").splitlines()[-limit:]:
+        try:
+            rows.append(json.loads(line))
+        except Exception:
+            continue
+
+    return list(reversed(rows))
+
+
+def _journal_line(account_code: str, account_name: str, debit: float = 0, credit: float = 0, memo: str = "") -> Dict[str, Any]:
+    return {
+        "account_code": account_code,
+        "account_name": account_name,
+        "debit": _money(debit),
+        "credit": _money(credit),
+        "memo": memo,
+    }
+
+
+def _build_sale_completed_preview(event: Dict[str, Any]) -> Dict[str, Any]:
+    payload = event.get("payload") or {}
+    sale = payload.get("sale") or {}
+
+    sale_id = sale.get("id") or event.get("event_id")
+    invoice = sale.get("invoice_number") or sale_id
+    total = _money(sale.get("total"))
+    subtotal = _money(sale.get("subtotal"))
+    discount = _money(sale.get("discount")) + _money(sale.get("voucher_discount"))
+    cogs = _money(sale.get("cogs"))
+    net_sales = _money(total)
+
+    lines = [
+        _journal_line("1000", "Cash / Payment Clearing", debit=total, memo=f"Receive payment for {invoice}"),
+        _journal_line("4000", "Sales Revenue", credit=net_sales, memo=f"Recognize sale {invoice}"),
+    ]
+
+    if discount > 0:
+        lines.append(_journal_line("4100", "Sales Discount", debit=discount, memo=f"Discount for {invoice}"))
+
+    if cogs > 0:
+        lines.extend([
+            _journal_line("5000", "Cost of Goods Sold", debit=cogs, memo=f"COGS for {invoice}"),
+            _journal_line("1200", "Inventory", credit=cogs, memo=f"Inventory out for {invoice}"),
+        ])
+
+    return {
+        "event_type": "sale_completed",
+        "event_id": event.get("event_id"),
+        "source": "nexapos",
+        "tenant_id": event.get("tenant_id"),
+        "received_at": event.get("received_at"),
+        "source_number": invoice,
+        "status": "preview",
+        "amount": total,
+        "summary": f"Preview journal for completed sale {invoice}",
+        "lines": lines,
+        "balanced": _money(sum(x["debit"] for x in lines)) == _money(sum(x["credit"] for x in lines)),
+    }
+
+
+def _build_sale_voided_preview(event: Dict[str, Any]) -> Dict[str, Any]:
+    payload = event.get("payload") or {}
+    void_result = payload.get("void_result") or {}
+    sale = void_result.get("sale") or void_result.get("voided_sale") or {}
+
+    sale_id = payload.get("sale_id") or event.get("event_id")
+    invoice = sale.get("invoice_number") or void_result.get("invoice_number") or sale_id
+    total = _money(sale.get("total") or void_result.get("total") or void_result.get("refund_amount"))
+    cogs = _money(sale.get("cogs") or void_result.get("cogs"))
+
+    lines = [
+        _journal_line("4000", "Sales Revenue", debit=total, memo=f"Reverse sale {invoice}"),
+        _journal_line("1000", "Cash / Payment Clearing", credit=total, memo=f"Refund/void payment for {invoice}"),
+    ]
+
+    if cogs > 0:
+        lines.extend([
+            _journal_line("1200", "Inventory", debit=cogs, memo=f"Inventory restored for void {invoice}"),
+            _journal_line("5000", "Cost of Goods Sold", credit=cogs, memo=f"Reverse COGS for {invoice}"),
+        ])
+
+    return {
+        "event_type": "sale_voided",
+        "event_id": event.get("event_id"),
+        "source": "nexapos",
+        "tenant_id": event.get("tenant_id"),
+        "received_at": event.get("received_at"),
+        "source_number": invoice,
+        "status": "preview",
+        "amount": total,
+        "summary": f"Preview reversal journal for voided sale {invoice}",
+        "lines": lines,
+        "balanced": _money(sum(x["debit"] for x in lines)) == _money(sum(x["credit"] for x in lines)),
+    }
+
+
+def _build_po_received_preview(event: Dict[str, Any]) -> Dict[str, Any]:
+    payload = event.get("payload") or {}
+    po = payload.get("purchase_order") or {}
+    receive_id = payload.get("receive_id") or event.get("event_id")
+    po_number = po.get("po_number") or payload.get("po_id") or "PO"
+
+    amount = 0.0
+    for rec in po.get("receive_history") or []:
+        if not receive_id or rec.get("id") == receive_id:
+            amount = _money(rec.get("total_received_value") or rec.get("amount"))
+            break
+
+    if not amount:
+        amount = _money(payload.get("amount") or po.get("total_received_value") or po.get("total"))
+
+    lines = [
+        _journal_line("1200", "Inventory", debit=amount, memo=f"Receive inventory {po_number}/{receive_id}"),
+        _journal_line("2000", "Accounts Payable", credit=amount, memo=f"AP for received PO {po_number}/{receive_id}"),
+    ]
+
+    return {
+        "event_type": "purchase_order_received",
+        "event_id": event.get("event_id"),
+        "source": "nexapos",
+        "tenant_id": event.get("tenant_id"),
+        "received_at": event.get("received_at"),
+        "source_number": f"{po_number}/{receive_id}",
+        "status": "preview",
+        "amount": amount,
+        "summary": f"Preview journal for PO receive {po_number}",
+        "lines": lines,
+        "balanced": _money(sum(x["debit"] for x in lines)) == _money(sum(x["credit"] for x in lines)),
+    }
+
+
+def _build_journal_preview(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    event = record.get("event") or {}
+    event_type = event.get("event_type")
+
+    event_with_received = {
+        **event,
+        "received_at": record.get("received_at"),
+    }
+
+    if event_type == "sale_completed":
+        return _build_sale_completed_preview(event_with_received)
+
+    if event_type == "sale_voided":
+        return _build_sale_voided_preview(event_with_received)
+
+    if event_type == "purchase_order_received":
+        return _build_po_received_preview(event_with_received)
+
+    return None
+
+
+@app.get("/api/v1/journal-preview/queue")
+def journal_preview_queue(limit: int = 50) -> Dict[str, Any]:
+    records = _event_records(limit=max(1, min(limit, 200)))
+    previews = []
+
+    for record in records:
+        preview = _build_journal_preview(record)
+        if preview:
+            previews.append(preview)
+
+    return {
+        "ok": True,
+        "count": len(previews),
+        "items": previews,
+        "note": "B9 preview queue only. No permanent ledger posting is performed yet.",
+    }
+
