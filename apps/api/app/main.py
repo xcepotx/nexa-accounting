@@ -288,6 +288,44 @@ def _journal_line(account_code: str, account_name: str, debit: float = 0, credit
     }
 
 
+def _mapping_account(event_type: str, role: str, fallback_code: str, fallback_name: str) -> Dict[str, Any]:
+    mapping_key = f"{event_type}.{role}"
+
+    try:
+        for mapping in _account_mappings():
+            if mapping.get("event_type") == event_type and mapping.get("role") == role and mapping.get("valid_account"):
+                return {
+                    "account_code": str(mapping.get("account_code") or fallback_code),
+                    "account_name": str(mapping.get("account_name") or fallback_name),
+                    "mapping_key": mapping.get("key") or mapping_key,
+                    "mapping_source": "settings",
+                }
+    except Exception as exc:
+        print(f"WARNING: account mapping lookup failed for {mapping_key}: {exc!r}", flush=True)
+
+    return {
+        "account_code": str(fallback_code),
+        "account_name": str(fallback_name),
+        "mapping_key": mapping_key,
+        "mapping_source": "fallback",
+    }
+
+
+def _mapped_journal_line(event_type: str, role: str, fallback_code: str, fallback_name: str, debit: float = 0, credit: float = 0, memo: str = "") -> Dict[str, Any]:
+    account = _mapping_account(event_type, role, fallback_code, fallback_name)
+    line = _journal_line(
+        account["account_code"],
+        account["account_name"],
+        debit=debit,
+        credit=credit,
+        memo=memo,
+    )
+    line["mapping_key"] = account.get("mapping_key")
+    line["mapping_role"] = role
+    line["mapping_source"] = account.get("mapping_source")
+    return line
+
+
 def _build_sale_completed_preview(event: Dict[str, Any]) -> Dict[str, Any]:
     payload = event.get("payload") or {}
     sale = payload.get("sale") or {}
@@ -301,17 +339,17 @@ def _build_sale_completed_preview(event: Dict[str, Any]) -> Dict[str, Any]:
     net_sales = _money(total)
 
     lines = [
-        _journal_line("1000", "Cash / Payment Clearing", debit=total, memo=f"Receive payment for {invoice}"),
-        _journal_line("4000", "Sales Revenue", credit=net_sales, memo=f"Recognize sale {invoice}"),
+        _mapped_journal_line("sale_completed", "cash_debit", "1000", "Cash / Payment Clearing", debit=total, memo=f"Receive payment for {invoice}"),
+        _mapped_journal_line("sale_completed", "sales_credit", "4000", "Sales Revenue", credit=net_sales, memo=f"Recognize sale {invoice}"),
     ]
 
     if discount > 0:
-        lines.append(_journal_line("4100", "Sales Discount", debit=discount, memo=f"Discount for {invoice}"))
+        lines.append(_mapped_journal_line("sale_completed", "discount_debit", "4100", "Sales Discount", debit=discount, memo=f"Discount for {invoice}"))
 
     if cogs > 0:
         lines.extend([
-            _journal_line("5000", "Cost of Goods Sold", debit=cogs, memo=f"COGS for {invoice}"),
-            _journal_line("1200", "Inventory", credit=cogs, memo=f"Inventory out for {invoice}"),
+            _mapped_journal_line("sale_completed", "cogs_debit", "5000", "Cost of Goods Sold", debit=cogs, memo=f"COGS for {invoice}"),
+            _mapped_journal_line("sale_completed", "inventory_credit", "1200", "Inventory", credit=cogs, memo=f"Inventory out for {invoice}"),
         ])
 
     return {
@@ -369,14 +407,14 @@ def _build_sale_voided_preview(event: Dict[str, Any], records: Optional[list[Dic
                 cogs = _money(paired_sale.get("cogs"))
 
     lines = [
-        _journal_line("4000", "Sales Revenue", debit=total, memo=f"Reverse sale {invoice}"),
-        _journal_line("1000", "Cash / Payment Clearing", credit=total, memo=f"Refund/void payment for {invoice}"),
+        _mapped_journal_line("sale_voided", "sales_debit", "4000", "Sales Revenue", debit=total, memo=f"Reverse sale {invoice}"),
+        _mapped_journal_line("sale_voided", "cash_credit", "1000", "Cash / Payment Clearing", credit=total, memo=f"Refund/void payment for {invoice}"),
     ]
 
     if cogs > 0:
         lines.extend([
-            _journal_line("1200", "Inventory", debit=cogs, memo=f"Inventory restored for void {invoice}"),
-            _journal_line("5000", "Cost of Goods Sold", credit=cogs, memo=f"Reverse COGS for {invoice}"),
+            _mapped_journal_line("sale_voided", "inventory_debit", "1200", "Inventory", debit=cogs, memo=f"Inventory restored for void {invoice}"),
+            _mapped_journal_line("sale_voided", "cogs_credit", "5000", "Cost of Goods Sold", credit=cogs, memo=f"Reverse COGS for {invoice}"),
         ])
 
     return {
@@ -411,8 +449,8 @@ def _build_po_received_preview(event: Dict[str, Any]) -> Dict[str, Any]:
         amount = _money(payload.get("amount") or po.get("total_received_value") or po.get("total"))
 
     lines = [
-        _journal_line("1200", "Inventory", debit=amount, memo=f"Receive inventory {po_number}/{receive_id}"),
-        _journal_line("2000", "Accounts Payable", credit=amount, memo=f"AP for received PO {po_number}/{receive_id}"),
+        _mapped_journal_line("purchase_order_received", "inventory_debit", "1200", "Inventory", debit=amount, memo=f"Receive inventory {po_number}/{receive_id}"),
+        _mapped_journal_line("purchase_order_received", "ap_credit", "2000", "Accounts Payable", credit=amount, memo=f"AP for received PO {po_number}/{receive_id}"),
     ]
 
     return {
@@ -440,14 +478,14 @@ def _build_cash_movement_created_preview(event: Dict[str, Any]) -> Dict[str, Any
 
     if movement_type == "in":
         lines = [
-            _journal_line("1000", "Cash / Payment Clearing", debit=amount, memo=f"Cash in {movement_id}"),
-            _journal_line("6200", "Cash Over / Short", credit=amount, memo=f"Cash movement offset {movement_id}"),
+            _mapped_journal_line("cash_movement_created", "cash", "1000", "Cash / Payment Clearing", debit=amount, memo=f"Cash in {movement_id}"),
+            _mapped_journal_line("cash_movement_created", "offset", "6200", "Cash Over / Short", credit=amount, memo=f"Cash movement offset {movement_id}"),
         ]
         summary = f"Preview journal for cash in {movement_id}"
     else:
         lines = [
-            _journal_line("6200", "Cash Over / Short", debit=amount, memo=f"Cash movement offset {movement_id}"),
-            _journal_line("1000", "Cash / Payment Clearing", credit=amount, memo=f"Cash out {movement_id}"),
+            _mapped_journal_line("cash_movement_created", "offset", "6200", "Cash Over / Short", debit=amount, memo=f"Cash movement offset {movement_id}"),
+            _mapped_journal_line("cash_movement_created", "cash", "1000", "Cash / Payment Clearing", credit=amount, memo=f"Cash out {movement_id}"),
         ]
         summary = f"Preview journal for cash out {movement_id}"
 
@@ -478,13 +516,13 @@ def _build_stock_adjusted_preview(event: Dict[str, Any]) -> Dict[str, Any]:
 
     if qty_change >= 0:
         lines = [
-            _journal_line("1200", "Inventory", debit=amount, memo=f"Stock increase {product_name} / {movement_id}"),
-            _journal_line("6300", "Inventory Adjustment", credit=amount, memo=f"Inventory adjustment offset {movement_id}"),
+            _mapped_journal_line("stock_adjusted", "inventory", "1200", "Inventory", debit=amount, memo=f"Stock increase {product_name} / {movement_id}"),
+            _mapped_journal_line("stock_adjusted", "offset", "6300", "Inventory Adjustment", credit=amount, memo=f"Inventory adjustment offset {movement_id}"),
         ]
     else:
         lines = [
-            _journal_line("6300", "Inventory Adjustment", debit=amount, memo=f"Stock decrease {product_name} / {movement_id}"),
-            _journal_line("1200", "Inventory", credit=amount, memo=f"Inventory decrease {movement_id}"),
+            _mapped_journal_line("stock_adjusted", "offset", "6300", "Inventory Adjustment", debit=amount, memo=f"Stock decrease {product_name} / {movement_id}"),
+            _mapped_journal_line("stock_adjusted", "inventory", "1200", "Inventory", credit=amount, memo=f"Inventory decrease {movement_id}"),
         ]
 
     return {
@@ -516,8 +554,8 @@ def _build_expense_created_preview(event: Dict[str, Any]) -> Dict[str, Any]:
     payment_name = str(expense.get("payment_account_name") or "Cash / Payment Clearing")
 
     lines = [
-        _journal_line(expense_code, expense_name, debit=amount, memo=f"Expense {expense_number}"),
-        _journal_line(payment_code, payment_name, credit=amount, memo=f"Expense payment {expense_number}"),
+        _mapped_journal_line("expense_created", "expense_debit", expense_code, expense_name, debit=amount, memo=f"Expense {expense_number}"),
+        _mapped_journal_line("expense_created", "payment_credit", payment_code, payment_name, credit=amount, memo=f"Expense payment {expense_number}"),
     ]
 
     return {
@@ -553,13 +591,13 @@ def _build_payment_settlement_created_preview(event: Dict[str, Any]) -> Dict[str
     fee_name = str(settlement.get("fee_expense_account_name") or "Payment Fee Expense")
 
     lines = [
-        _journal_line(bank_code, bank_name, debit=net, memo=f"Settlement net received {settlement_number}"),
+        _mapped_journal_line("payment_settlement_created", "bank_debit", bank_code, bank_name, debit=net, memo=f"Settlement net received {settlement_number}"),
     ]
 
     if fee > 0:
-        lines.append(_journal_line(fee_code, fee_name, debit=fee, memo=f"Settlement fee {settlement_number}"))
+        lines.append(_mapped_journal_line("payment_settlement_created", "fee_debit", fee_code, fee_name, debit=fee, memo=f"Settlement fee {settlement_number}"))
 
-    lines.append(_journal_line(clearing_code, clearing_name, credit=gross, memo=f"Clear payment settlement {settlement_number}"))
+    lines.append(_mapped_journal_line("payment_settlement_created", "clearing_credit", clearing_code, clearing_name, credit=gross, memo=f"Clear payment settlement {settlement_number}"))
 
     return {
         "event_type": "payment_settlement_created",
@@ -589,8 +627,8 @@ def _build_supplier_payment_recorded_preview(event: Dict[str, Any]) -> Dict[str,
     payment_name = str(payment.get("payment_account_name") or "Cash / Payment Clearing")
 
     lines = [
-        _journal_line(ap_code, ap_name, debit=amount, memo=f"Supplier payment {payment_number}"),
-        _journal_line(payment_code, payment_name, credit=amount, memo=f"Pay supplier {payment_number}"),
+        _mapped_journal_line("supplier_payment_recorded", "ap_debit", ap_code, ap_name, debit=amount, memo=f"Supplier payment {payment_number}"),
+        _mapped_journal_line("supplier_payment_recorded", "payment_credit", payment_code, payment_name, credit=amount, memo=f"Pay supplier {payment_number}"),
     ]
 
     return {
