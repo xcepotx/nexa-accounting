@@ -3,476 +3,617 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Nexa Accounting</title>
+  <title>Nexa Accounting Console</title>
   <style>
-    body{margin:0;font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f8fafc;color:#0f172a}
-    .shell{min-height:100vh;display:flex}
-    aside{width:280px;background:#0f172a;color:white;padding:28px 22px;box-sizing:border-box}
-    main{flex:1;padding:34px;box-sizing:border-box;background:radial-gradient(circle at top right,#dbeafe 0,transparent 32rem),#f8fafc}
-    .brand{display:flex;align-items:center;gap:12px;margin-bottom:36px}
-    .logo{width:40px;height:40px;border-radius:14px;display:grid;place-items:center;background:white;color:#0f172a;font-weight:900}
-    .brand-title{font-size:18px;font-weight:800}.brand-sub{font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:#94a3b8;margin-top:2px}
-    .nav-title{font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:#64748b;margin:22px 0 10px}
-    .nav-item{padding:11px 12px;border-radius:12px;color:#cbd5e1;font-size:14px;margin-bottom:4px}.nav-item.active{background:white;color:#0f172a;font-weight:800}
-    .hero{background:#0f172a;color:white;padding:34px;border-radius:32px;box-shadow:0 24px 70px rgba(15,23,42,.14)}
-    .eyebrow{font-size:12px;letter-spacing:.25em;text-transform:uppercase;color:#cbd5e1;font-weight:800}
-    h1{margin:14px 0 10px;font-size:42px;line-height:1;letter-spacing:-.04em}.hero p{color:#cbd5e1;max-width:760px;line-height:1.7;font-size:15px}
-    .grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;margin-top:22px}
-    .card{background:white;border:1px solid #e2e8f0;border-radius:24px;padding:22px;box-shadow:0 10px 30px rgba(15,23,42,.05)}
-    .card h3{margin:0 0 8px;font-size:16px}.card p{margin:0;color:#64748b;font-size:13px;line-height:1.6}
-    .status{display:inline-flex;gap:8px;align-items:center;padding:8px 12px;border-radius:999px;background:#ecfdf5;color:#047857;font-size:12px;font-weight:800}
-    .dot{width:8px;height:8px;background:#10b981;border-radius:50%}.footer{margin-top:24px;color:#64748b;font-size:12px}
-    @media(max-width:900px){.shell{display:block}aside{width:auto}.grid{grid-template-columns:1fr}main{padding:20px}h1{font-size:34px}}
-  
-    .trial-balance{margin-top:22px;background:white;border:1px solid #e2e8f0;border-radius:24px;padding:22px;box-shadow:0 10px 30px rgba(15,23,42,.05)}
-    .trial-balance h2{margin:0;font-size:18px;letter-spacing:-.02em}
-    .trial-balance p{margin:6px 0 0;color:#64748b;font-size:13px;line-height:1.6}
-
+    :root{
+      --bg:#f6f8fb;
+      --panel:#ffffff;
+      --ink:#0f172a;
+      --muted:#64748b;
+      --line:#e2e8f0;
+      --soft:#f8fafc;
+      --brand:#2563eb;
+      --brand2:#0f172a;
+      --ok:#16a34a;
+      --warn:#d97706;
+      --bad:#dc2626;
+      --shadow:0 14px 40px rgba(15,23,42,.07);
+      --radius:22px;
+    }
+    *{box-sizing:border-box}
+    body{
+      margin:0;
+      background:linear-gradient(135deg,#f8fafc 0%,#eef4ff 45%,#f6f8fb 100%);
+      color:var(--ink);
+      font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+    }
+    a{color:inherit;text-decoration:none}
+    .app{display:grid;grid-template-columns:270px minmax(0,1fr);min-height:100vh}
+    .sidebar{
+      position:sticky;top:0;height:100vh;padding:22px;
+      background:rgba(255,255,255,.82);backdrop-filter:blur(16px);
+      border-right:1px solid rgba(226,232,240,.9);
+    }
+    .brand{display:flex;gap:12px;align-items:center;margin-bottom:24px}
+    .logo{
+      width:42px;height:42px;border-radius:16px;
+      display:grid;place-items:center;
+      background:linear-gradient(135deg,#2563eb,#0f172a);
+      color:#fff;font-weight:950;box-shadow:var(--shadow)
+    }
+    .brand-title{font-size:16px;font-weight:950;letter-spacing:-.03em}
+    .brand-sub{font-size:12px;color:var(--muted);margin-top:2px}
+    .nav{display:grid;gap:7px}
+    .nav a{
+      padding:11px 12px;border-radius:15px;color:#334155;
+      font-weight:800;font-size:13px;display:flex;align-items:center;gap:10px;
+      border:1px solid transparent;
+    }
+    .nav a.active{
+      color:#0f172a;background:#eff6ff;border-color:#bfdbfe;
+      box-shadow:0 8px 18px rgba(37,99,235,.08)
+    }
+    .nav .icon{width:20px;text-align:center}
+    .sidebar-foot{
+      position:absolute;left:22px;right:22px;bottom:22px;
+      padding:14px;border-radius:18px;background:#f8fafc;border:1px solid var(--line);
+      font-size:12px;color:var(--muted);line-height:1.5
+    }
+    .main{min-width:0;padding:24px 28px 48px}
+    .topbar{
+      display:flex;justify-content:space-between;gap:16px;align-items:center;
+      margin-bottom:22px;
+    }
+    .crumb{font-size:12px;color:var(--muted);font-weight:800;text-transform:uppercase;letter-spacing:.12em}
+    h1{font-size:30px;line-height:1.1;margin:6px 0 0;letter-spacing:-.045em}
+    .subtitle{color:var(--muted);font-size:14px;margin-top:8px;line-height:1.6}
+    .status-pill{
+      display:inline-flex;align-items:center;gap:8px;
+      background:#ecfdf5;color:#166534;border:1px solid #bbf7d0;
+      padding:9px 12px;border-radius:999px;font-size:12px;font-weight:900;
+      white-space:nowrap;
+    }
+    .dot{width:8px;height:8px;border-radius:99px;background:#22c55e}
+    .toolbar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:0 0 18px}
+    .input,.select{
+      height:38px;border:1px solid var(--line);border-radius:13px;
+      padding:0 12px;background:#fff;color:var(--ink);font-weight:700;
+      outline:none;min-width:180px;
+    }
+    .button{
+      height:38px;border:1px solid #bfdbfe;background:#eff6ff;color:#1d4ed8;
+      border-radius:13px;padding:0 13px;font-weight:900;cursor:pointer;
+    }
+    .button.dark{background:#0f172a;color:white;border-color:#0f172a}
+    .button:disabled{opacity:.55;cursor:not-allowed}
+    .grid{display:grid;gap:16px}
+    .grid.cards{grid-template-columns:repeat(4,minmax(0,1fr))}
+    .card{
+      background:rgba(255,255,255,.9);border:1px solid rgba(226,232,240,.95);
+      border-radius:var(--radius);box-shadow:var(--shadow);padding:18px;
+    }
+    .metric-label{font-size:11px;color:var(--muted);letter-spacing:.12em;text-transform:uppercase;font-weight:950}
+    .metric-value{font-size:26px;font-weight:950;letter-spacing:-.04em;margin-top:8px}
+    .metric-hint{font-size:12px;color:var(--muted);margin-top:6px;line-height:1.45}
+    .section-title{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:12px}
+    .section-title h2{font-size:18px;margin:0;letter-spacing:-.03em}
+    .section-title p{font-size:13px;color:var(--muted);margin:5px 0 0;line-height:1.55}
+    .table-wrap{overflow:auto;border:1px solid var(--line);border-radius:18px;background:#fff}
+    table{width:100%;border-collapse:collapse;font-size:13px;min-width:760px}
+    th{
+      text-align:left;background:#f8fafc;color:#64748b;
+      font-size:11px;text-transform:uppercase;letter-spacing:.12em;
+      padding:11px 12px;border-bottom:1px solid var(--line);white-space:nowrap
+    }
+    td{padding:12px;border-bottom:1px solid #f1f5f9;vertical-align:top}
+    tr:last-child td{border-bottom:0}
+    .right{text-align:right}
+    .muted{color:var(--muted)}
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px}
+    .badge{
+      display:inline-flex;align-items:center;gap:6px;border-radius:999px;
+      padding:5px 9px;font-size:11px;font-weight:950;background:#f1f5f9;color:#334155;
+      white-space:nowrap;
+    }
+    .badge.ok{background:#dcfce7;color:#166534}
+    .badge.warn{background:#fef3c7;color:#92400e}
+    .badge.bad{background:#fee2e2;color:#991b1b}
+    .badge.blue{background:#dbeafe;color:#1d4ed8}
+    .empty{padding:22px;border:1px dashed #cbd5e1;border-radius:18px;background:#f8fafc;color:#64748b}
+    .split{display:grid;grid-template-columns:1.05fr .95fr;gap:16px}
+    .details{
+      display:grid;gap:10px;margin-top:12px;
+      max-height:520px;overflow:auto;padding-right:4px;
+    }
+    .detail-card{border:1px solid var(--line);background:#fff;border-radius:17px;padding:14px}
+    .detail-title{font-weight:950;font-size:13px}
+    .detail-meta{font-size:12px;color:var(--muted);margin-top:5px;line-height:1.45}
+    .lines{margin-top:12px;border:1px solid var(--line);border-radius:14px;overflow:auto}
+    .lines table{min-width:520px;font-size:12px}
+    .route{display:none}
+    .route.active{display:block}
+    .loading{animation:pulse 1.2s ease-in-out infinite}
+    @keyframes pulse{0%,100%{opacity:.65}50%{opacity:1}}
+    @media(max-width:980px){
+      .app{grid-template-columns:1fr}
+      .sidebar{position:relative;height:auto}
+      .sidebar-foot{position:relative;left:auto;right:auto;bottom:auto;margin-top:16px}
+      .main{padding:20px}
+      .grid.cards{grid-template-columns:1fr 1fr}
+      .split{grid-template-columns:1fr}
+    }
+    @media(max-width:640px){
+      .grid.cards{grid-template-columns:1fr}
+      .topbar{align-items:flex-start;flex-direction:column}
+      h1{font-size:25px}
+    }
   </style>
 </head>
 <body>
-  <div class="shell">
-    <aside>
-      <div class="brand"><div class="logo">NA</div><div><div class="brand-title">Nexa Accounting</div><div class="brand-sub">Finance Engine</div></div></div>
-      <div class="nav-title">Control</div>
-      <div class="nav-item active">Dashboard</div>
-      <div class="nav-item">Chart of Accounts</div>
-      <div class="nav-item">Journal Entries</div>
-      <div class="nav-item">Ledger</div>
-      <div class="nav-title">Reports</div>
-      <div class="nav-item">Profit & Loss</div>
-      <div class="nav-item">Balance Sheet</div>
-      <div class="nav-item">Trial Balance</div>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="logo">NA</div>
+        <div>
+          <div class="brand-title">Nexa Accounting</div>
+          <div class="brand-sub">Accounting Console</div>
+        </div>
+      </div>
+
+      <nav class="nav" id="nav">
+        <a href="#dashboard" data-route="dashboard"><span class="icon">◼</span> Dashboard</a>
+        <a href="#events" data-route="events"><span class="icon">↔</span> Event Inbox</a>
+        <a href="#previews" data-route="previews"><span class="icon">◇</span> Journal Preview</a>
+        <a href="#drafts" data-route="drafts"><span class="icon">✎</span> Draft Journals</a>
+        <a href="#ledger" data-route="ledger"><span class="icon">▦</span> Simulated Ledger</a>
+        <a href="#reports" data-route="reports"><span class="icon">▤</span> Reports</a>
+      </nav>
+
+      <div class="sidebar-foot">
+        <strong>Status:</strong> integrated with NexaPOS event bridge.<br/>
+        <span class="muted">Simulated ledger only. Permanent DB ledger is not enabled yet.</span>
+      </div>
     </aside>
-    <main>
-      <section class="hero">
-        <div class="eyebrow">B2 Skeleton Online</div>
-        <h1>Standalone accounting app is ready.</h1>
-        <p>Nexa Accounting is being separated from NexaPOS. This skeleton already has its own web app, API service, and POS event receiver placeholder.</p>
-        <div id="api-status" class="status"><span class="dot"></span><span>Checking API...</span></div>
-      </section>
-      <section class="grid">
-        <div class="card"><h3>POS Event Receiver</h3><p>Prepared endpoint for sales, void, purchase receive, settlement, expense, and supplier payment events.</p></div>
-        <div class="card"><h3>Finance Engine Boundary</h3><p>NexaPOS stays focused on sales, stock, outlets, cashier, and operational reports.</p></div>
-        <div class="card"><h3>Accounting Migration</h3><p>Next batches will move COA, journals, ledger, P&L, balance sheet, and trial balance.</p></div>
-      </section>
 
-      <section class="events">
-        <div class="events-head">
-          <div>
-            <h2>Recent POS Events</h2>
-            <p>Sanitized metadata from NexaPOS event bridge. Payload values are intentionally hidden.</p>
-          </div>
-          <div id="events-count" class="pill">Loading...</div>
+    <main class="main">
+      <div class="topbar">
+        <div>
+          <div class="crumb" id="crumb">Dashboard</div>
+          <h1 id="page-title">Accounting Command Center</h1>
+          <div class="subtitle" id="page-subtitle">Monitor POS events, previews, drafts, simulated ledger, and reports.</div>
         </div>
-        <div id="events-body" class="empty">Loading recent events...</div>
-      </section>
+        <div class="status-pill" id="api-status"><span class="dot"></span><span>Checking API...</span></div>
+      </div>
 
-      <section class="journal-preview">
-        <div class="events-head">
-          <div>
-            <h2>Journal Preview Queue</h2>
-            <p>Generated from NexaPOS events. This is preview only; ledger posting is not permanent yet.</p>
+      <section id="route-dashboard" class="route active">
+        <div class="grid cards" id="dashboard-metrics"></div>
+        <div style="height:16px"></div>
+        <div class="split">
+          <div class="card">
+            <div class="section-title">
+              <div><h2>Latest POS Events</h2><p>Recent event pipeline status from NexaPOS.</p></div>
+              <a class="button" href="#events">Open Inbox</a>
+            </div>
+            <div id="dashboard-events"></div>
           </div>
-          <div id="journal-preview-count" class="pill">Loading...</div>
-        </div>
-        <div id="journal-preview-body" class="empty">Loading journal previews...</div>
-      </section>
-
-      <section class="draft-queue">
-        <div class="events-head">
-          <div>
-            <h2>Draft Journal Queue</h2>
-            <p>Persistent journal drafts generated from previews. These are not posted to the ledger yet.</p>
+          <div class="card">
+            <div class="section-title">
+              <div><h2>Report Health</h2><p>Balance status from simulated ledger and trial balance.</p></div>
+              <a class="button" href="#reports">Open Reports</a>
+            </div>
+            <div id="dashboard-health"></div>
           </div>
-          <div id="journal-draft-count" class="pill">Loading...</div>
         </div>
-        <div id="journal-draft-body" class="empty">Loading draft journals...</div>
       </section>
 
-      <section class="trial-balance">
-        <div class="events-head">
-          <div>
-            <h2>Trial Balance</h2>
-            <p>Simulated trial balance generated from posted simulated ledger lines.</p>
+      <section id="route-events" class="route">
+        <div class="toolbar">
+          <input class="input" id="event-search" placeholder="Search event key/type/status..." />
+          <select class="select" id="event-type-filter">
+            <option value="">All event types</option>
+          </select>
+          <select class="select" id="event-status-filter">
+            <option value="">All pipeline status</option>
+            <option value="received">received</option>
+            <option value="previewed">previewed</option>
+            <option value="drafted">drafted</option>
+            <option value="posted_simulated">posted_simulated</option>
+            <option value="ledger_simulated">ledger_simulated</option>
+          </select>
+          <button class="button" onclick="reloadAll()">Refresh</button>
+        </div>
+        <div class="card">
+          <div class="section-title">
+            <div><h2>Event Inbox</h2><p>Public metadata only. Payload values stay hidden in this console.</p></div>
           </div>
-          <div id="trial-balance-status" class="pill">Loading...</div>
+          <div id="events-table"></div>
         </div>
-        <div id="trial-balance-body" class="empty">Loading trial balance...</div>
       </section>
 
-      <section class="ledger-summary">
-        <div class="events-head">
-          <div>
-            <h2>Ledger Summary</h2>
-            <p>Aggregated from simulated ledger entries and lines. This validates debit/credit balance and account totals.</p>
+      <section id="route-previews" class="route">
+        <div class="toolbar">
+          <input class="input" id="preview-search" placeholder="Search previews..." />
+          <select class="select" id="preview-type-filter"><option value="">All event types</option></select>
+          <button class="button" onclick="reloadAll()">Refresh</button>
+        </div>
+        <div class="card">
+          <div class="section-title">
+            <div><h2>Journal Preview Workspace</h2><p>Generated debit/credit preview from POS events. No permanent posting here.</p></div>
           </div>
-          <div id="ledger-summary-status" class="pill">Loading...</div>
+          <div id="preview-list"></div>
         </div>
-        <div id="ledger-summary-body" class="empty">Loading ledger summary...</div>
       </section>
 
-      <section class="ledger-store">
-        <div class="events-head">
-          <div>
-            <h2>Simulated Ledger Store</h2>
-            <p>Posted simulated journal entries and lines. This is still not a permanent accounting ledger.</p>
+      <section id="route-drafts" class="route">
+        <div class="toolbar">
+          <input class="input" id="draft-search" placeholder="Search drafts..." />
+          <select class="select" id="draft-status-filter">
+            <option value="">All statuses</option>
+            <option value="draft">draft</option>
+            <option value="posted_simulated">posted_simulated</option>
+          </select>
+          <button class="button" onclick="reloadAll()">Refresh</button>
+        </div>
+        <div class="card">
+          <div class="section-title">
+            <div><h2>Draft Journal Queue</h2><p>Persistent journal drafts generated from previews.</p></div>
           </div>
-          <div id="sim-ledger-count" class="pill">Loading...</div>
+          <div id="drafts-table"></div>
         </div>
-        <div id="sim-ledger-body" class="empty">Loading simulated ledger entries...</div>
       </section>
 
-      <div class="footer"><strong>API:</strong> <code>/api/health</code> · <strong>Recent events:</strong> <code>/api/v1/events/recent-public</code> · <strong>Journal preview:</strong> <code>/api/v1/journal-preview/queue</code> · <strong>Drafts:</strong> <code>/api/v1/journal-drafts/public</code> · <strong>Sim ledger:</strong> <code>/api/v1/simulated-ledger/entries</code> · <strong>Post all:</strong> <code>/api/v1/journal-drafts/post-all-simulated</code> · <strong>Source:</strong> /data/accounting/app/nexa-accounting</div>
+      <section id="route-ledger" class="route">
+        <div class="grid cards" id="ledger-metrics"></div>
+        <div style="height:16px"></div>
+        <div class="card">
+          <div class="section-title">
+            <div><h2>Simulated Ledger Entries</h2><p>Materialized simulated entries and lines from posted simulated drafts.</p></div>
+          </div>
+          <div id="ledger-table"></div>
+        </div>
+      </section>
+
+      <section id="route-reports" class="route">
+        <div class="grid cards" id="report-metrics"></div>
+        <div style="height:16px"></div>
+        <div class="split">
+          <div class="card">
+            <div class="section-title">
+              <div><h2>Trial Balance</h2><p>Ending debit/credit per account from simulated ledger.</p></div>
+            </div>
+            <div id="trial-balance-table"></div>
+          </div>
+          <div class="card">
+            <div class="section-title">
+              <div><h2>Ledger Summary by Event</h2><p>Entry and amount summary by POS event type.</p></div>
+            </div>
+            <div id="event-summary-table"></div>
+          </div>
+        </div>
+      </section>
     </main>
   </div>
-  <script>
-    function escapeHtml(value) {
-      return String(value == null ? "" : value)
-        .replaceAll("&", "&amp;")
-        .replaceAll("<", "&lt;")
-        .replaceAll(">", "&gt;")
-        .replaceAll('"', "&quot;")
-        .replaceAll("'", "&#039;");
-    }
 
-    function shortTime(value) {
-      if (!value) return "-";
-      try {
-        return new Date(value).toLocaleString();
-      } catch (_) {
-        return value;
-      }
-    }
+<script>
+const state = {
+  health: null,
+  events: [],
+  previews: [],
+  drafts: [],
+  ledgerEntries: [],
+  ledgerSummary: null,
+  trialBalance: null,
+};
 
-    fetch("/api/health").then(r=>r.json()).then(data=>{
-      document.querySelector("#api-status span:last-child").textContent = data && data.ok ? "API online: " + data.service : "API check returned unexpected response";
-    }).catch(()=>{
-      document.querySelector("#api-status span:last-child").textContent = "API offline";
-      document.querySelector("#api-status").style.background="#fff1f2";
-      document.querySelector("#api-status").style.color="#be123c";
-      document.querySelector(".dot").style.background="#e11d48";
-    });
+const routeMeta = {
+  dashboard: ["Dashboard", "Accounting Command Center", "Monitor POS events, previews, drafts, simulated ledger, and reports."],
+  events: ["Event Inbox", "POS Event Inbox", "Track event status from received to simulated ledger."],
+  previews: ["Journal Preview", "Journal Preview Workspace", "Review generated debit/credit previews per POS event."],
+  drafts: ["Draft Journals", "Draft Journal Queue", "Review persistent draft journals and simulated posting status."],
+  ledger: ["Simulated Ledger", "Simulated Ledger Store", "Inspect materialized simulated journal entries."],
+  reports: ["Reports", "Accounting Reports", "Trial balance and ledger health checks."],
+};
 
-    function loadRecentEvents() {
-      fetch("/api/v1/events/recent-public")
-        .then(r => r.json())
-        .then(data => {
-          const count = data && Array.isArray(data.events) ? data.events.length : 0;
-          document.querySelector("#events-count").textContent = count + " event" + (count === 1 ? "" : "s");
+function escapeHtml(value){
+  return String(value == null ? "" : value)
+    .replaceAll("&","&amp;").replaceAll("<","&lt;")
+    .replaceAll(">","&gt;").replaceAll('"',"&quot;")
+    .replaceAll("'","&#039;");
+}
+function money(value){
+  const n = Number(value || 0);
+  return n.toLocaleString(undefined,{maximumFractionDigits:2});
+}
+function shortTime(value){
+  if(!value) return "-";
+  try{return new Date(value).toLocaleString();}catch(_){return value;}
+}
+function badge(text,type=""){
+  return `<span class="badge ${type}">${escapeHtml(text || "-")}</span>`;
+}
+function statusBadge(status){
+  const s = String(status || "-");
+  if(s.includes("ledger") || s.includes("posted") || s === "sent") return badge(s,"ok");
+  if(s.includes("draft") || s.includes("preview") || s === "received") return badge(s,"blue");
+  if(s.includes("dead") || s.includes("failed") || s.includes("unbalanced")) return badge(s,"bad");
+  return badge(s,"warn");
+}
+async function fetchJson(url){
+  const res = await fetch(url);
+  if(!res.ok) throw new Error(url + " " + res.status);
+  return await res.json();
+}
+function table(headers, rows){
+  if(!rows.length) return `<div class="empty">No data available.</div>`;
+  return `<div class="table-wrap"><table><thead><tr>${headers.map(h=>`<th class="${h.right?'right':''}">${escapeHtml(h.label)}</th>`).join("")}</tr></thead><tbody>${rows.join("")}</tbody></table></div>`;
+}
+function metric(label,value,hint){
+  return `<div class="card"><div class="metric-label">${escapeHtml(label)}</div><div class="metric-value">${escapeHtml(value)}</div><div class="metric-hint">${escapeHtml(hint || "")}</div></div>`;
+}
+function lineTable(lines){
+  const rows = (lines || []).map(line => `
+    <tr>
+      <td class="mono">${escapeHtml(line.account_code)}</td>
+      <td>${escapeHtml(line.account_name)}</td>
+      <td class="right">${money(line.debit)}</td>
+      <td class="right">${money(line.credit)}</td>
+    </tr>
+  `);
+  return `<div class="lines">${table([
+    {label:"Code"},{label:"Account"},{label:"Debit",right:true},{label:"Credit",right:true}
+  ], rows)}</div>`;
+}
+function setSelectOptions(id, values){
+  const el = document.getElementById(id);
+  if(!el) return;
+  const current = el.value;
+  const first = el.querySelector("option")?.outerHTML || `<option value="">All</option>`;
+  el.innerHTML = first + values.map(v=>`<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join("");
+  el.value = values.includes(current) ? current : "";
+}
 
-          if (!count) {
-            document.querySelector("#events-body").className = "empty";
-            document.querySelector("#events-body").textContent = "No POS events received yet.";
-            return;
-          }
+async function reloadAll(){
+  document.querySelector("#api-status span:last-child").textContent = "Loading...";
+  try{
+    const [health, eventsStatus, previews, drafts, ledgerEntries, ledgerSummary, trialBalance] = await Promise.all([
+      fetchJson("/api/health"),
+      fetchJson("/api/v1/events/status?limit=300"),
+      fetchJson("/api/v1/journal-preview/queue?limit=300"),
+      fetchJson("/api/v1/journal-drafts/public"),
+      fetchJson("/api/v1/simulated-ledger/entries"),
+      fetchJson("/api/v1/simulated-ledger/summary"),
+      fetchJson("/api/v1/reports/trial-balance-simulated"),
+    ]);
 
-          const rows = data.events.map((event) => {
-            const payloadKeys = Array.isArray(event.payload_keys) && event.payload_keys.length
-              ? event.payload_keys.join(", ")
-              : "-";
+    state.health = health;
+    state.events = eventsStatus.events || [];
+    state.previews = previews.items || [];
+    state.drafts = drafts.items || [];
+    state.ledgerEntries = ledgerEntries.items || [];
+    state.ledgerSummary = ledgerSummary;
+    state.trialBalance = trialBalance;
 
-            return `
-              <tr>
-                <td>${escapeHtml(shortTime(event.received_at))}</td>
-                <td><span class="pill">${escapeHtml(event.event_type)}</span></td>
-                <td>${escapeHtml(event.event_id || "-")}</td>
-                <td>${escapeHtml(event.tenant_id || "-")}</td>
-                <td class="muted">${escapeHtml(payloadKeys)}</td>
-              </tr>
-            `;
-          }).join("");
+    document.querySelector("#api-status").style.background = "#ecfdf5";
+    document.querySelector("#api-status").style.color = "#166534";
+    document.querySelector(".dot").style.background = "#22c55e";
+    document.querySelector("#api-status span:last-child").textContent = "API online";
 
-          document.querySelector("#events-body").className = "";
-          document.querySelector("#events-body").innerHTML = `
-            <table class="event-table">
-              <thead>
-                <tr>
-                  <th>Received</th>
-                  <th>Type</th>
-                  <th>Event ID</th>
-                  <th>Tenant</th>
-                  <th>Payload Keys</th>
-                </tr>
-              </thead>
-              <tbody>${rows}</tbody>
-            </table>
-          `;
-        })
-        .catch(() => {
-          document.querySelector("#events-count").textContent = "Offline";
-          document.querySelector("#events-body").className = "empty";
-          document.querySelector("#events-body").textContent = "Could not load recent events.";
-        });
-    }
+    hydrateFilters();
+    renderCurrentRoute();
+  }catch(err){
+    console.error(err);
+    document.querySelector("#api-status").style.background = "#fff1f2";
+    document.querySelector("#api-status").style.color = "#be123c";
+    document.querySelector(".dot").style.background = "#e11d48";
+    document.querySelector("#api-status span:last-child").textContent = "API issue";
+  }
+}
 
+function hydrateFilters(){
+  setSelectOptions("event-type-filter", [...new Set(state.events.map(x=>x.event_type).filter(Boolean))].sort());
+  setSelectOptions("preview-type-filter", [...new Set(state.previews.map(x=>x.event_type).filter(Boolean))].sort());
+}
 
-    function money(value) {
-      const n = Number(value || 0);
-      return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
-    }
+function currentRoute(){
+  return (location.hash || "#dashboard").replace("#","") || "dashboard";
+}
+function routeTo(route){
+  if(!routeMeta[route]) route = "dashboard";
+  document.querySelectorAll(".route").forEach(el=>el.classList.remove("active"));
+  document.querySelector(`#route-${route}`)?.classList.add("active");
+  document.querySelectorAll(".nav a").forEach(a=>a.classList.toggle("active", a.dataset.route === route));
+  const meta = routeMeta[route];
+  document.getElementById("crumb").textContent = meta[0];
+  document.getElementById("page-title").textContent = meta[1];
+  document.getElementById("page-subtitle").textContent = meta[2];
+  renderCurrentRoute();
+}
+function renderCurrentRoute(){
+  const route = currentRoute();
+  if(route === "dashboard") renderDashboard();
+  if(route === "events") renderEvents();
+  if(route === "previews") renderPreviews();
+  if(route === "drafts") renderDrafts();
+  if(route === "ledger") renderLedger();
+  if(route === "reports") renderReports();
+}
 
-    function loadJournalPreviewQueue() {
-      fetch("/api/v1/journal-preview/queue")
-        .then(r => r.json())
-        .then(data => {
-          const items = data && Array.isArray(data.items) ? data.items : [];
-          document.querySelector("#journal-preview-count").textContent = items.length + " preview" + (items.length === 1 ? "" : "s");
+function renderDashboard(){
+  const ledgerSummary = state.ledgerSummary?.summary || {};
+  const tb = state.trialBalance?.summary || {};
+  const eventCounts = {};
+  state.events.forEach(e=>{const t=e.event_type||"unknown";eventCounts[t]=(eventCounts[t]||0)+1});
+  document.getElementById("dashboard-metrics").innerHTML = [
+    metric("Events", state.events.length, "POS events tracked"),
+    metric("Previews", state.previews.length, "Journal previews generated"),
+    metric("Drafts", state.drafts.length, "Persistent journal drafts"),
+    metric("Ledger Entries", ledgerSummary.entry_count || state.ledgerEntries.length, "Simulated posted entries"),
+  ].join("");
 
-          if (!items.length) {
-            document.querySelector("#journal-preview-body").className = "empty";
-            document.querySelector("#journal-preview-body").textContent = "No journal previews available yet.";
-            return;
-          }
+  const latest = state.events.slice(0,8).map(e=>`
+    <tr>
+      <td>${statusBadge(e.pipeline?.status || e.status)}</td>
+      <td>${escapeHtml(e.event_type)}</td>
+      <td class="mono">${escapeHtml(e.event_key)}</td>
+      <td>${escapeHtml(shortTime(e.received_at))}</td>
+    </tr>
+  `);
+  document.getElementById("dashboard-events").innerHTML = table([
+    {label:"Status"},{label:"Type"},{label:"Event Key"},{label:"Received"}
+  ], latest);
 
-          const html = items.map((item) => {
-            const lines = Array.isArray(item.lines) ? item.lines : [];
-            const lineRows = lines.map((line) => `
-              <tr>
-                <td>${escapeHtml(line.account_code || "-")}</td>
-                <td>${escapeHtml(line.account_name || "-")}</td>
-                <td class="right">${money(line.debit)}</td>
-                <td class="right">${money(line.credit)}</td>
-              </tr>
-            `).join("");
+  document.getElementById("dashboard-health").innerHTML = `
+    <div class="grid cards" style="grid-template-columns:1fr 1fr">
+      ${metric("Ledger Balance", ledgerSummary.balanced ? "Balanced" : "Unbalanced", "Difference: " + money(ledgerSummary.difference))}
+      ${metric("Trial Balance", tb.balanced ? "Balanced" : "Unbalanced", "Ending diff: " + money(tb.ending_difference))}
+      ${metric("Total Debit", money(ledgerSummary.total_debit), "Simulated ledger")}
+      ${metric("Total Credit", money(ledgerSummary.total_credit), "Simulated ledger")}
+    </div>
+  `;
+}
 
-            return `
-              <div class="preview-card">
-                <div class="preview-top">
-                  <div>
-                    <div class="preview-title">${escapeHtml(item.summary || item.event_type)}</div>
-                    <div class="preview-sub">${escapeHtml(item.event_type)} · ${escapeHtml(item.source_number || item.event_id || "-")} · ${escapeHtml(shortTime(item.received_at))}</div>
-                  </div>
-                  <div>
-                    <div class="amount">${money(item.amount)}</div>
-                    <div class="preview-sub">${item.balanced ? "Balanced" : "Unbalanced"}</div>
-                  </div>
-                </div>
-                <table class="line-table">
-                  <thead><tr><th>Code</th><th>Account</th><th class="right">Debit</th><th class="right">Credit</th></tr></thead>
-                  <tbody>${lineRows}</tbody>
-                </table>
-              </div>
-            `;
-          }).join("");
+function renderEvents(){
+  const search = (document.getElementById("event-search")?.value || "").toLowerCase();
+  const type = document.getElementById("event-type-filter")?.value || "";
+  const status = document.getElementById("event-status-filter")?.value || "";
+  const rows = state.events
+    .filter(e => !type || e.event_type === type)
+    .filter(e => !status || e.pipeline?.status === status)
+    .filter(e => !search || JSON.stringify(e).toLowerCase().includes(search))
+    .map(e=>`
+      <tr>
+        <td>${statusBadge(e.pipeline?.status || e.status)}</td>
+        <td>${escapeHtml(e.event_type)}</td>
+        <td class="mono">${escapeHtml(e.event_key)}</td>
+        <td>${escapeHtml(e.tenant_id)}</td>
+        <td>${escapeHtml(shortTime(e.received_at))}</td>
+        <td>${e.pipeline?.ledger_simulated ? badge("ledger","ok") : e.pipeline?.drafted ? badge("draft","blue") : badge("not yet","warn")}</td>
+      </tr>
+    `);
+  document.getElementById("events-table").innerHTML = table([
+    {label:"Pipeline"},{label:"Type"},{label:"Event Key"},{label:"Tenant"},{label:"Received"},{label:"Materialized"}
+  ], rows);
+}
 
-          document.querySelector("#journal-preview-body").className = "";
-          document.querySelector("#journal-preview-body").innerHTML = html;
-        })
-        .catch(() => {
-          document.querySelector("#journal-preview-count").textContent = "Offline";
-          document.querySelector("#journal-preview-body").className = "empty";
-          document.querySelector("#journal-preview-body").textContent = "Could not load journal preview queue.";
-        });
-    }
+function renderPreviews(){
+  const search = (document.getElementById("preview-search")?.value || "").toLowerCase();
+  const type = document.getElementById("preview-type-filter")?.value || "";
+  const items = state.previews
+    .filter(x=>!type || x.event_type === type)
+    .filter(x=>!search || JSON.stringify(x).toLowerCase().includes(search));
 
-    loadRecentEvents();
+  document.getElementById("preview-list").innerHTML = items.length ? `<div class="details">` + items.map(item=>`
+    <div class="detail-card">
+      <div style="display:flex;justify-content:space-between;gap:12px">
+        <div>
+          <div class="detail-title">${escapeHtml(item.summary || item.event_type)}</div>
+          <div class="detail-meta">${escapeHtml(item.event_type)} · ${escapeHtml(item.source_number || item.event_id)} · ${escapeHtml(shortTime(item.received_at))}</div>
+        </div>
+        <div style="text-align:right">
+          <div class="detail-title">${money(item.amount)}</div>
+          <div class="detail-meta">${item.balanced ? badge("balanced","ok") : badge("unbalanced","bad")}</div>
+        </div>
+      </div>
+      ${lineTable(item.lines || [])}
+    </div>
+  `).join("") + `</div>` : `<div class="empty">No previews found.</div>`;
+}
 
-    function loadJournalDraftQueue() {
-      fetch("/api/v1/journal-drafts/public")
-        .then(r => r.json())
-        .then(data => {
-          const items = data && Array.isArray(data.items) ? data.items : [];
-          document.querySelector("#journal-draft-count").textContent = items.length + " draft" + (items.length === 1 ? "" : "s");
+function renderDrafts(){
+  const search = (document.getElementById("draft-search")?.value || "").toLowerCase();
+  const status = document.getElementById("draft-status-filter")?.value || "";
+  const rows = state.drafts
+    .filter(d=>!status || d.status === status)
+    .filter(d=>!search || JSON.stringify(d).toLowerCase().includes(search))
+    .map(d=>`
+      <tr>
+        <td>${statusBadge(d.status)}</td>
+        <td>${escapeHtml(d.event_type)}</td>
+        <td>${escapeHtml(d.source_number || d.event_id)}</td>
+        <td class="right">${money(d.amount)}</td>
+        <td class="right">${d.line_count || 0}</td>
+        <td>${d.balanced ? badge("balanced","ok") : badge("unbalanced","bad")}</td>
+        <td>${escapeHtml(shortTime(d.updated_at || d.created_at))}</td>
+      </tr>
+    `);
+  document.getElementById("drafts-table").innerHTML = table([
+    {label:"Status"},{label:"Type"},{label:"Source"},{label:"Amount",right:true},{label:"Lines",right:true},{label:"Balance"},{label:"Updated"}
+  ], rows);
+}
 
-          if (!items.length) {
-            document.querySelector("#journal-draft-body").className = "empty";
-            document.querySelector("#journal-draft-body").textContent = "No journal drafts generated yet.";
-            return;
-          }
+function renderLedger(){
+  const summary = state.ledgerSummary?.summary || {};
+  document.getElementById("ledger-metrics").innerHTML = [
+    metric("Entries", summary.entry_count || state.ledgerEntries.length, "Simulated ledger entries"),
+    metric("Lines", summary.line_count || "-", "Journal lines"),
+    metric("Debit", money(summary.total_debit), "Total movement debit"),
+    metric("Credit", money(summary.total_credit), "Total movement credit"),
+  ].join("");
 
-          const html = `<div class="draft-list">` + items.map((item) => `
-            <div class="draft-item">
-              <div>
-                <div class="draft-name">${escapeHtml(item.summary || item.event_type || "-")}</div>
-                <div class="draft-meta">${escapeHtml(item.event_type || "-")} · ${escapeHtml(item.source_number || item.event_id || "-")} · ${escapeHtml(shortTime(item.created_at))}</div>
-                <div class="draft-meta">${Number(item.amount || 0).toLocaleString()} · ${item.line_count || 0} lines · ${item.balanced ? "balanced" : "unbalanced"}</div>
-                <div class="draft-meta">${item.posted_simulated_at ? "Posted simulated: " + escapeHtml(shortTime(item.posted_simulated_at)) : "Waiting for simulated posting"}</div>
-              </div>
-              <div class="draft-status ${item.status === "posted_simulated" ? "posted" : ""}">${escapeHtml(item.status || "draft")}</div>
-            </div>
-          `).join("") + `</div>`;
+  const rows = state.ledgerEntries.map(e=>`
+    <tr>
+      <td>${statusBadge(e.status)}</td>
+      <td>${escapeHtml(e.event_type)}</td>
+      <td>${escapeHtml(e.source_number || e.event_id)}</td>
+      <td class="right">${money(e.amount)}</td>
+      <td class="right">${money(e.total_debit)}</td>
+      <td class="right">${money(e.total_credit)}</td>
+      <td class="right">${e.line_count || 0}</td>
+      <td>${e.balanced ? badge("balanced","ok") : badge("unbalanced","bad")}</td>
+    </tr>
+  `);
+  document.getElementById("ledger-table").innerHTML = table([
+    {label:"Status"},{label:"Type"},{label:"Source"},{label:"Amount",right:true},{label:"Debit",right:true},{label:"Credit",right:true},{label:"Lines",right:true},{label:"Balance"}
+  ], rows);
+}
 
-          document.querySelector("#journal-draft-body").className = "";
-          document.querySelector("#journal-draft-body").innerHTML = html;
-        })
-        .catch(() => {
-          document.querySelector("#journal-draft-count").textContent = "Offline";
-          document.querySelector("#journal-draft-body").className = "empty";
-          document.querySelector("#journal-draft-body").textContent = "Could not load journal draft queue.";
-        });
-    }
+function renderReports(){
+  const tb = state.trialBalance?.summary || {};
+  const sum = state.ledgerSummary?.summary || {};
+  document.getElementById("report-metrics").innerHTML = [
+    metric("Trial Balance", tb.balanced ? "Balanced" : "Unbalanced", "Ending diff: " + money(tb.ending_difference)),
+    metric("Accounts", tb.account_count || 0, "Accounts in report"),
+    metric("Ending Debit", money(tb.ending_debit), "Trial balance"),
+    metric("Ending Credit", money(tb.ending_credit), "Trial balance"),
+  ].join("");
 
-    loadJournalPreviewQueue();
+  const tbRows = (state.trialBalance?.rows || []).map(r=>`
+    <tr>
+      <td class="mono">${escapeHtml(r.account_code)}</td>
+      <td>${escapeHtml(r.account_name)}</td>
+      <td class="right">${money(r.debit)}</td>
+      <td class="right">${money(r.credit)}</td>
+      <td class="right">${money(r.ending_debit)}</td>
+      <td class="right">${money(r.ending_credit)}</td>
+    </tr>
+  `);
+  document.getElementById("trial-balance-table").innerHTML = table([
+    {label:"Code"},{label:"Account"},{label:"Move Dr",right:true},{label:"Move Cr",right:true},{label:"End Dr",right:true},{label:"End Cr",right:true}
+  ], tbRows);
 
-    function loadSimulatedLedgerStore() {
-      fetch("/api/v1/simulated-ledger/entries")
-        .then(r => r.json())
-        .then(data => {
-          const items = data && Array.isArray(data.items) ? data.items : [];
-          const counts = data && data.counts ? data.counts : {};
-          document.querySelector("#sim-ledger-count").textContent = (counts.entries || items.length) + " entries";
+  const evRows = (state.ledgerSummary?.by_event_type || []).map(r=>`
+    <tr>
+      <td>${escapeHtml(r.event_type)}</td>
+      <td class="right">${r.entry_count || 0}</td>
+      <td class="right">${r.line_count || 0}</td>
+      <td class="right">${money(r.amount)}</td>
+      <td class="right">${money(r.total_debit)}</td>
+      <td class="right">${money(r.total_credit)}</td>
+    </tr>
+  `);
+  document.getElementById("event-summary-table").innerHTML = table([
+    {label:"Event Type"},{label:"Entries",right:true},{label:"Lines",right:true},{label:"Amount",right:true},{label:"Debit",right:true},{label:"Credit",right:true}
+  ], evRows);
+}
 
-          if (!items.length) {
-            document.querySelector("#sim-ledger-body").className = "empty";
-            document.querySelector("#sim-ledger-body").textContent = "No simulated ledger entries yet.";
-            return;
-          }
+["event-search","event-type-filter","event-status-filter","preview-search","preview-type-filter","draft-search","draft-status-filter"].forEach(id=>{
+  document.addEventListener("input", e=>{ if(e.target && e.target.id === id) renderCurrentRoute(); });
+  document.addEventListener("change", e=>{ if(e.target && e.target.id === id) renderCurrentRoute(); });
+});
 
-          const html = `<div class="ledger-list">` + items.map((item) => `
-            <div class="ledger-item">
-              <div>
-                <div class="ledger-name">${escapeHtml(item.summary || item.event_type || "-")}</div>
-                <div class="ledger-meta">${escapeHtml(item.event_type || "-")} · ${escapeHtml(item.source_number || item.event_id || "-")} · ${escapeHtml(shortTime(item.posted_simulated_at))}</div>
-                <div class="ledger-meta">Debit ${Number(item.total_debit || 0).toLocaleString()} · Credit ${Number(item.total_credit || 0).toLocaleString()} · ${item.line_count || 0} lines · ${item.balanced ? "balanced" : "unbalanced"}</div>
-              </div>
-              <div class="draft-status posted">${escapeHtml(item.status || "posted_simulated")}</div>
-            </div>
-          `).join("") + `</div>`;
-
-          document.querySelector("#sim-ledger-body").className = "";
-          document.querySelector("#sim-ledger-body").innerHTML = html;
-        })
-        .catch(() => {
-          document.querySelector("#sim-ledger-count").textContent = "Offline";
-          document.querySelector("#sim-ledger-body").className = "empty";
-          document.querySelector("#sim-ledger-body").textContent = "Could not load simulated ledger store.";
-        });
-    }
-
-    loadJournalDraftQueue();
-
-    function loadLedgerSummary() {
-      fetch("/api/v1/simulated-ledger/summary")
-        .then(r => r.json())
-        .then(data => {
-          const summary = data && data.summary ? data.summary : {};
-          const accounts = data && Array.isArray(data.by_account) ? data.by_account : [];
-          const eventTypes = data && Array.isArray(data.by_event_type) ? data.by_event_type : [];
-
-          document.querySelector("#ledger-summary-status").textContent = summary.balanced ? "Balanced" : "Unbalanced";
-
-          const accountRows = accounts.map((item) => `
-            <tr>
-              <td>${escapeHtml(item.account_code || "-")}</td>
-              <td>${escapeHtml(item.account_name || "-")}</td>
-              <td class="right">${money(item.debit)}</td>
-              <td class="right">${money(item.credit)}</td>
-              <td class="right">${money(item.net_debit)}</td>
-              <td class="right">${money(item.net_credit)}</td>
-            </tr>
-          `).join("");
-
-          const eventRows = eventTypes.map((item) => `
-            <tr>
-              <td>${escapeHtml(item.event_type || "-")}</td>
-              <td class="right">${item.entry_count || 0}</td>
-              <td class="right">${item.line_count || 0}</td>
-              <td class="right">${money(item.amount)}</td>
-              <td class="right">${money(item.total_debit)}</td>
-              <td class="right">${money(item.total_credit)}</td>
-            </tr>
-          `).join("");
-
-          document.querySelector("#ledger-summary-body").className = "";
-          document.querySelector("#ledger-summary-body").innerHTML = `
-            <div class="summary-metrics">
-              <div class="summary-metric"><div class="label">Entries</div><div class="value">${summary.entry_count || 0}</div></div>
-              <div class="summary-metric"><div class="label">Lines</div><div class="value">${summary.line_count || 0}</div></div>
-              <div class="summary-metric"><div class="label">Debit</div><div class="value">${money(summary.total_debit)}</div></div>
-              <div class="summary-metric"><div class="label">Credit</div><div class="value">${money(summary.total_credit)}</div></div>
-            </div>
-
-            <div class="summary-block">
-              <h3>By Account</h3>
-              <table class="line-table">
-                <thead>
-                  <tr>
-                    <th>Code</th><th>Account</th><th class="right">Debit</th><th class="right">Credit</th><th class="right">Net Dr</th><th class="right">Net Cr</th>
-                  </tr>
-                </thead>
-                <tbody>${accountRows}</tbody>
-              </table>
-            </div>
-
-            <div class="summary-block">
-              <h3>By Event Type</h3>
-              <table class="line-table">
-                <thead>
-                  <tr>
-                    <th>Event</th><th class="right">Entries</th><th class="right">Lines</th><th class="right">Amount</th><th class="right">Debit</th><th class="right">Credit</th>
-                  </tr>
-                </thead>
-                <tbody>${eventRows}</tbody>
-              </table>
-            </div>
-          `;
-        })
-        .catch(() => {
-          document.querySelector("#ledger-summary-status").textContent = "Offline";
-          document.querySelector("#ledger-summary-body").className = "empty";
-          document.querySelector("#ledger-summary-body").textContent = "Could not load ledger summary.";
-        });
-    }
-
-    loadSimulatedLedgerStore();
-
-    function loadTrialBalance() {
-      fetch("/api/v1/reports/trial-balance-simulated")
-        .then(r => r.json())
-        .then(data => {
-          const summary = data && data.summary ? data.summary : {};
-          const rows = data && Array.isArray(data.rows) ? data.rows : [];
-
-          document.querySelector("#trial-balance-status").textContent = summary.balanced ? "Balanced" : "Unbalanced";
-
-          const bodyRows = rows.map((row) => `
-            <tr>
-              <td>${escapeHtml(row.account_code || "-")}</td>
-              <td>${escapeHtml(row.account_name || "-")}</td>
-              <td class="right">${money(row.debit)}</td>
-              <td class="right">${money(row.credit)}</td>
-              <td class="right">${money(row.ending_debit)}</td>
-              <td class="right">${money(row.ending_credit)}</td>
-            </tr>
-          `).join("");
-
-          document.querySelector("#trial-balance-body").className = "";
-          document.querySelector("#trial-balance-body").innerHTML = `
-            <div class="summary-metrics">
-              <div class="summary-metric"><div class="label">Accounts</div><div class="value">${summary.account_count || 0}</div></div>
-              <div class="summary-metric"><div class="label">Entries</div><div class="value">${summary.entry_count || 0}</div></div>
-              <div class="summary-metric"><div class="label">Ending Dr</div><div class="value">${money(summary.ending_debit)}</div></div>
-              <div class="summary-metric"><div class="label">Ending Cr</div><div class="value">${money(summary.ending_credit)}</div></div>
-            </div>
-
-            <div class="summary-block">
-              <h3>Trial Balance Rows</h3>
-              <table class="line-table">
-                <thead>
-                  <tr>
-                    <th>Code</th>
-                    <th>Account</th>
-                    <th class="right">Movement Dr</th>
-                    <th class="right">Movement Cr</th>
-                    <th class="right">Ending Dr</th>
-                    <th class="right">Ending Cr</th>
-                  </tr>
-                </thead>
-                <tbody>${bodyRows}</tbody>
-              </table>
-            </div>
-          `;
-        })
-        .catch(() => {
-          document.querySelector("#trial-balance-status").textContent = "Offline";
-          document.querySelector("#trial-balance-body").className = "empty";
-          document.querySelector("#trial-balance-body").textContent = "Could not load trial balance.";
-        });
-    }
-
-    loadLedgerSummary();
-    loadTrialBalance();
-  </script>
+window.addEventListener("hashchange",()=>routeTo(currentRoute()));
+routeTo(currentRoute());
+reloadAll();
+</script>
 </body>
 </html>
