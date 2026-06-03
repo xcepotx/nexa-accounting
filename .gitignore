@@ -21,3 +21,6 @@ data/events/*.jsonl
 Thumbs.db
 .vscode/
 .idea/
+
+# local patch backups
+backups-*/
