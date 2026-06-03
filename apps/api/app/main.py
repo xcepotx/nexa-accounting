@@ -393,6 +393,9 @@ def _public_journal_draft_summary(draft: Dict[str, Any]) -> Dict[str, Any]:
         "line_count": len(lines),
         "created_at": draft.get("created_at"),
         "updated_at": draft.get("updated_at"),
+        "posted_simulated_at": draft.get("posted_simulated_at"),
+        "posted_simulated_by": draft.get("posted_simulated_by"),
+        "posting_note": draft.get("posting_note"),
     }
 
 
@@ -475,5 +478,95 @@ def generate_journal_drafts_from_previews(_: None = Depends(require_internal_key
         "created": created,
         "skipped": skipped[:50],
         "note": "Drafts generated only. No permanent ledger posting was performed.",
+    }
+
+def _read_journal_drafts_chronological(limit: int = 10000) -> list[Dict[str, Any]]:
+    if not JOURNAL_DRAFT_STORE_PATH.exists():
+        return []
+
+    rows = []
+    for line in JOURNAL_DRAFT_STORE_PATH.read_text(encoding="utf-8").splitlines()[-limit:]:
+        try:
+            rows.append(json.loads(line))
+        except Exception:
+            continue
+
+    return rows
+
+
+def _write_journal_drafts_chronological(drafts: list[Dict[str, Any]]) -> None:
+    JOURNAL_DRAFT_STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with JOURNAL_DRAFT_STORE_PATH.open("w", encoding="utf-8") as f:
+        for draft in drafts:
+            f.write(json.dumps(draft, ensure_ascii=False, default=_json_default) + "\n")
+
+
+@app.post("/api/v1/journal-drafts/{draft_id}/post-simulated")
+def post_journal_draft_simulated(draft_id: str, body: Optional[Dict[str, Any]] = None, _: None = Depends(require_internal_key)) -> Dict[str, Any]:
+    body = body or {}
+    drafts = _read_journal_drafts_chronological(limit=10000)
+
+    if not drafts:
+        raise HTTPException(status_code=404, detail="No journal drafts found")
+
+    now = now_iso()
+    updated = None
+
+    for draft in drafts:
+        if draft.get("id") != draft_id:
+            continue
+
+        if draft.get("status") == "posted_simulated":
+            return {
+                "ok": True,
+                "status": "already_posted_simulated",
+                "draft": draft,
+                "summary": _public_journal_draft_summary(draft),
+            }
+
+        if draft.get("status") not in {"draft", "reviewed", None}:
+            raise HTTPException(status_code=400, detail=f"Draft status cannot be posted_simulated from {draft.get('status')}")
+
+        if not draft.get("balanced"):
+            raise HTTPException(status_code=400, detail="Unbalanced draft cannot be posted")
+
+        draft["status"] = "posted_simulated"
+        draft["posted_simulated_at"] = now
+        draft["posted_simulated_by"] = body.get("posted_by") or "system"
+        draft["posting_note"] = body.get("note") or "Posted as simulated journal; permanent ledger posting not enabled yet."
+        draft["updated_at"] = now
+        updated = draft
+        break
+
+    if not updated:
+        raise HTTPException(status_code=404, detail="Journal draft not found")
+
+    _write_journal_drafts_chronological(drafts)
+
+    return {
+        "ok": True,
+        "status": "posted_simulated",
+        "draft": updated,
+        "summary": _public_journal_draft_summary(updated),
+        "note": "State transition only. No permanent ledger posting was performed.",
+    }
+
+
+@app.post("/api/v1/journal-drafts/post-first-draft-simulated")
+def post_first_draft_simulated(_: None = Depends(require_internal_key)) -> Dict[str, Any]:
+    drafts = _read_journal_drafts_chronological(limit=10000)
+
+    for draft in drafts:
+        if draft.get("status") == "draft" and draft.get("balanced"):
+            return post_journal_draft_simulated(
+                draft.get("id"),
+                body={"posted_by": "system", "note": "B12 smoke test post simulated"},
+                _=None,
+            )
+
+    return {
+        "ok": True,
+        "status": "no_draft_available",
+        "message": "No draft journal is available for simulated posting.",
     }
 

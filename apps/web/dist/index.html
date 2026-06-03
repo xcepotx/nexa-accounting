@@ -249,8 +249,9 @@
                 <div class="draft-name">${escapeHtml(item.summary || item.event_type || "-")}</div>
                 <div class="draft-meta">${escapeHtml(item.event_type || "-")} · ${escapeHtml(item.source_number || item.event_id || "-")} · ${escapeHtml(shortTime(item.created_at))}</div>
                 <div class="draft-meta">${Number(item.amount || 0).toLocaleString()} · ${item.line_count || 0} lines · ${item.balanced ? "balanced" : "unbalanced"}</div>
+                <div class="draft-meta">${item.posted_simulated_at ? "Posted simulated: " + escapeHtml(shortTime(item.posted_simulated_at)) : "Waiting for simulated posting"}</div>
               </div>
-              <div class="draft-status">${escapeHtml(item.status || "draft")}</div>
+              <div class="draft-status ${item.status === "posted_simulated" ? "posted" : ""}">${escapeHtml(item.status || "draft")}</div>
             </div>
           `).join("") + `</div>`;
 
