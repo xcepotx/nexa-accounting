@@ -202,7 +202,25 @@ def _build_sale_completed_preview(event: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _build_sale_voided_preview(event: Dict[str, Any]) -> Dict[str, Any]:
+
+def _find_original_sale_completed_event(records: list[Dict[str, Any]], sale_id: str) -> Optional[Dict[str, Any]]:
+    if not sale_id:
+        return None
+
+    for record in records or []:
+        event = record.get("event") or {}
+        if event.get("event_type") != "sale_completed":
+            continue
+
+        payload = event.get("payload") or {}
+        sale = payload.get("sale") or {}
+
+        if str(event.get("event_id")) == str(sale_id) or str(sale.get("id")) == str(sale_id):
+            return sale
+
+    return None
+
+def _build_sale_voided_preview(event: Dict[str, Any], records: Optional[list[Dict[str, Any]]] = None) -> Dict[str, Any]:
     payload = event.get("payload") or {}
     void_result = payload.get("void_result") or {}
     sale = void_result.get("sale") or void_result.get("voided_sale") or {}
@@ -211,6 +229,17 @@ def _build_sale_voided_preview(event: Dict[str, Any]) -> Dict[str, Any]:
     invoice = sale.get("invoice_number") or void_result.get("invoice_number") or sale_id
     total = _money(sale.get("total") or void_result.get("total") or void_result.get("refund_amount"))
     cogs = _money(sale.get("cogs") or void_result.get("cogs"))
+
+    paired_sale = None
+    if records and (not total or not cogs):
+        paired_sale = _find_original_sale_completed_event(records, sale_id)
+        if paired_sale:
+            if not invoice or invoice == sale_id:
+                invoice = paired_sale.get("invoice_number") or invoice
+            if not total:
+                total = _money(paired_sale.get("total"))
+            if not cogs:
+                cogs = _money(paired_sale.get("cogs"))
 
     lines = [
         _journal_line("4000", "Sales Revenue", debit=total, memo=f"Reverse sale {invoice}"),
@@ -233,6 +262,7 @@ def _build_sale_voided_preview(event: Dict[str, Any]) -> Dict[str, Any]:
         "status": "preview",
         "amount": total,
         "summary": f"Preview reversal journal for voided sale {invoice}",
+        "paired_sale_completed_found": bool(paired_sale),
         "lines": lines,
         "balanced": _money(sum(x["debit"] for x in lines)) == _money(sum(x["credit"] for x in lines)),
     }
@@ -273,7 +303,7 @@ def _build_po_received_preview(event: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _build_journal_preview(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def _build_journal_preview(record: Dict[str, Any], records: Optional[list[Dict[str, Any]]] = None) -> Optional[Dict[str, Any]]:
     event = record.get("event") or {}
     event_type = event.get("event_type")
 
@@ -286,7 +316,7 @@ def _build_journal_preview(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return _build_sale_completed_preview(event_with_received)
 
     if event_type == "sale_voided":
-        return _build_sale_voided_preview(event_with_received)
+        return _build_sale_voided_preview(event_with_received, records=records)
 
     if event_type == "purchase_order_received":
         return _build_po_received_preview(event_with_received)
@@ -300,7 +330,7 @@ def journal_preview_queue(limit: int = 50) -> Dict[str, Any]:
     previews = []
 
     for record in records:
-        preview = _build_journal_preview(record)
+        preview = _build_journal_preview(record, records=records)
         if preview:
             previews.append(preview)
 
