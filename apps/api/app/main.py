@@ -88,3 +88,45 @@ def recent_events(_: None = Depends(require_internal_key)):
         except Exception:
             pass
     return {"ok": True, "events": rows}
+
+def _public_event_summary(record: Dict[str, Any]) -> Dict[str, Any]:
+    event = record.get("event") or {}
+    payload = event.get("payload") or {}
+
+    payload_keys = []
+    if isinstance(payload, dict):
+        payload_keys = sorted(str(k) for k in payload.keys())[:20]
+
+    return {
+        "received_at": record.get("received_at"),
+        "status": record.get("status"),
+        "tenant_id": event.get("tenant_id"),
+        "source": event.get("source"),
+        "event_type": event.get("event_type"),
+        "event_id": event.get("event_id"),
+        "occurred_at": event.get("occurred_at"),
+        "has_payload": bool(payload),
+        "payload_keys": payload_keys,
+    }
+
+
+@app.get("/api/v1/events/recent-public")
+def recent_events_public() -> Dict[str, Any]:
+    if not EVENT_STORE_PATH.exists():
+        return {"ok": True, "events": [], "count": 0}
+
+    rows = []
+    for line in EVENT_STORE_PATH.read_text(encoding="utf-8").splitlines()[-25:]:
+        try:
+            rows.append(_public_event_summary(json.loads(line)))
+        except Exception:
+            continue
+
+    rows = list(reversed(rows))
+    return {
+        "ok": True,
+        "count": len(rows),
+        "events": rows,
+        "note": "Public dashboard endpoint returns metadata only; payload values are not exposed.",
+    }
+

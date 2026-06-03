@@ -51,10 +51,40 @@
         <div class="card"><h3>Finance Engine Boundary</h3><p>NexaPOS stays focused on sales, stock, outlets, cashier, and operational reports.</p></div>
         <div class="card"><h3>Accounting Migration</h3><p>Next batches will move COA, journals, ledger, P&L, balance sheet, and trial balance.</p></div>
       </section>
-      <div class="footer"><strong>API:</strong> <code>/api/health</code> · <strong>Source:</strong> /data/accounting/app/nexa-accounting</div>
+
+      <section class="events">
+        <div class="events-head">
+          <div>
+            <h2>Recent POS Events</h2>
+            <p>Sanitized metadata from NexaPOS event bridge. Payload values are intentionally hidden.</p>
+          </div>
+          <div id="events-count" class="pill">Loading...</div>
+        </div>
+        <div id="events-body" class="empty">Loading recent events...</div>
+      </section>
+
+      <div class="footer"><strong>API:</strong> <code>/api/health</code> · <strong>Recent events:</strong> <code>/api/v1/events/recent-public</code> · <strong>Source:</strong> /data/accounting/app/nexa-accounting</div>
     </main>
   </div>
   <script>
+    function escapeHtml(value) {
+      return String(value == null ? "" : value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+
+    function shortTime(value) {
+      if (!value) return "-";
+      try {
+        return new Date(value).toLocaleString();
+      } catch (_) {
+        return value;
+      }
+    }
+
     fetch("/api/health").then(r=>r.json()).then(data=>{
       document.querySelector("#api-status span:last-child").textContent = data && data.ok ? "API online: " + data.service : "API check returned unexpected response";
     }).catch(()=>{
@@ -63,6 +93,60 @@
       document.querySelector("#api-status").style.color="#be123c";
       document.querySelector(".dot").style.background="#e11d48";
     });
+
+    function loadRecentEvents() {
+      fetch("/api/v1/events/recent-public")
+        .then(r => r.json())
+        .then(data => {
+          const count = data && Array.isArray(data.events) ? data.events.length : 0;
+          document.querySelector("#events-count").textContent = count + " event" + (count === 1 ? "" : "s");
+
+          if (!count) {
+            document.querySelector("#events-body").className = "empty";
+            document.querySelector("#events-body").textContent = "No POS events received yet.";
+            return;
+          }
+
+          const rows = data.events.map((event) => {
+            const payloadKeys = Array.isArray(event.payload_keys) && event.payload_keys.length
+              ? event.payload_keys.join(", ")
+              : "-";
+
+            return `
+              <tr>
+                <td>${escapeHtml(shortTime(event.received_at))}</td>
+                <td><span class="pill">${escapeHtml(event.event_type)}</span></td>
+                <td>${escapeHtml(event.event_id || "-")}</td>
+                <td>${escapeHtml(event.tenant_id || "-")}</td>
+                <td class="muted">${escapeHtml(payloadKeys)}</td>
+              </tr>
+            `;
+          }).join("");
+
+          document.querySelector("#events-body").className = "";
+          document.querySelector("#events-body").innerHTML = `
+            <table class="event-table">
+              <thead>
+                <tr>
+                  <th>Received</th>
+                  <th>Type</th>
+                  <th>Event ID</th>
+                  <th>Tenant</th>
+                  <th>Payload Keys</th>
+                </tr>
+              </thead>
+              <tbody>${rows}</tbody>
+            </table>
+          `;
+        })
+        .catch(() => {
+          document.querySelector("#events-count").textContent = "Offline";
+          document.querySelector("#events-body").className = "empty";
+          document.querySelector("#events-body").textContent = "Could not load recent events.";
+        });
+    }
+
+    loadRecentEvents();
   </script>
 </body>
 </html>
