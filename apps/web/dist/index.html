@@ -193,6 +193,10 @@
       .topbar{align-items:flex-start;flex-direction:column}
       h1{font-size:25px}
     }
+  
+    .settings-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px;max-width:100%}
+    @media(max-width:1200px){.settings-grid{grid-template-columns:1fr}}
+
   </style>
 </head>
 <body>
@@ -359,12 +363,14 @@
             <div id="event-summary-table"></div>
           </div>
         </div>
+      </section>
+
       <section id="route-settings" class="route">
         <div class="toolbar">
           <button class="button primary" onclick="runProtectedAction('Seed COA Defaults', '/api/v1/settings/seed-defaults', {})">Seed Defaults</button>
           <button class="button dark" onclick="reloadAll()">Refresh Settings</button>
         </div>
-        <div class="split">
+        <div class="settings-grid">
           <div class="card">
             <div class="section-title">
               <div><h2>Chart of Accounts</h2><p>Default account master used by the simulated accounting pipeline.</p></div>
@@ -378,8 +384,6 @@
             <div id="mapping-table"></div>
           </div>
         </div>
-      </section>
-
       </section>
     </main>
   </div>

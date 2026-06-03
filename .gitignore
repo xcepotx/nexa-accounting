@@ -31,3 +31,9 @@ data/events/*.jsonl
 
 # local patch backups
 backups-*/
+
+# runtime settings stores
+data/*.json
+
+# runtime app data
+data/
