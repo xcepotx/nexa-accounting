@@ -16,6 +16,7 @@ APP_NAME = os.getenv("APP_NAME", "Nexa Accounting API")
 APP_ENV = os.getenv("APP_ENV", "production")
 INTERNAL_API_KEY = os.getenv("INTERNAL_API_KEY", "")
 EVENT_STORE_PATH = Path(os.getenv("EVENT_STORE_PATH", "/tmp/nexa_accounting_events.jsonl"))
+EVENT_DEAD_LETTER_STORE_PATH = Path(os.getenv("EVENT_DEAD_LETTER_STORE_PATH", "/data/accounting/app/nexa-accounting/data/dead_letter_events.jsonl"))
 JOURNAL_DRAFT_STORE_PATH = Path(os.getenv("JOURNAL_DRAFT_STORE_PATH", "/data/accounting/app/nexa-accounting/data/journal_drafts.jsonl"))
 SIM_LEDGER_ENTRY_STORE_PATH = Path(os.getenv("SIM_LEDGER_ENTRY_STORE_PATH", "/data/accounting/app/nexa-accounting/data/sim_ledger_entries.jsonl"))
 SIM_LEDGER_LINE_STORE_PATH = Path(os.getenv("SIM_LEDGER_LINE_STORE_PATH", "/data/accounting/app/nexa-accounting/data/sim_ledger_lines.jsonl"))
@@ -62,23 +63,129 @@ def health():
         "time": now_iso(),
     }
 
+
+SUPPORTED_POS_EVENT_TYPES = {
+    "sale_completed",
+    "sale_voided",
+    "purchase_order_received",
+}
+
+
+def _event_key_from_event_dict(event: Dict[str, Any]) -> str:
+    return f"{event.get('source') or 'unknown'}:{event.get('event_type') or 'unknown'}:{event.get('event_id') or 'unknown'}"
+
+
+def _event_key_from_record(record: Dict[str, Any]) -> str:
+    if record.get("event_key"):
+        return str(record.get("event_key"))
+    return _event_key_from_event_dict(record.get("event") or {})
+
+
+def _read_event_records_chronological(limit: int = 10000) -> list[Dict[str, Any]]:
+    if not EVENT_STORE_PATH.exists():
+        return []
+
+    rows = []
+    for line in EVENT_STORE_PATH.read_text(encoding="utf-8").splitlines()[-limit:]:
+        try:
+            row = json.loads(line)
+            if "event_key" not in row:
+                row["event_key"] = _event_key_from_record(row)
+            rows.append(row)
+        except Exception:
+            continue
+
+    return rows
+
+
+def _append_event_record(record: Dict[str, Any]) -> None:
+    EVENT_STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with EVENT_STORE_PATH.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False, default=_json_default) + "\n")
+
+
+def _append_dead_letter_record(record: Dict[str, Any]) -> None:
+    EVENT_DEAD_LETTER_STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with EVENT_DEAD_LETTER_STORE_PATH.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False, default=_json_default) + "\n")
+
+
+def _find_event_record(event_key: str) -> Optional[Dict[str, Any]]:
+    for record in reversed(_read_event_records_chronological(limit=20000)):
+        if _event_key_from_record(record) == event_key:
+            return record
+    return None
+
+
+def _find_dead_letter_record(event_key: str) -> Optional[Dict[str, Any]]:
+    if not EVENT_DEAD_LETTER_STORE_PATH.exists():
+        return None
+
+    for line in reversed(EVENT_DEAD_LETTER_STORE_PATH.read_text(encoding="utf-8").splitlines()[-20000:]):
+        try:
+            record = json.loads(line)
+        except Exception:
+            continue
+        if _event_key_from_record(record) == event_key:
+            return record
+    return None
+
 @app.post("/api/v1/integrations/pos/events")
 def receive_pos_event(event: PosEvent, _: None = Depends(require_internal_key)):
-    EVENT_STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    event_data = event.model_dump()
+    event_key = _event_key_from_event_dict(event_data)
+    received_at = now_iso()
+
+    if event.event_type not in SUPPORTED_POS_EVENT_TYPES:
+        record = {
+            "received_at": received_at,
+            "status": "dead_letter",
+            "event_key": event_key,
+            "event": event_data,
+            "reason": "unsupported_event_type",
+            "message": f"Unsupported POS event type: {event.event_type}",
+            "note": "Stored in dead-letter. Event was accepted but will not be processed until supported.",
+        }
+        _append_dead_letter_record(record)
+        return {
+            "ok": True,
+            "status": "dead_letter",
+            "duplicate": False,
+            "event_key": event_key,
+            "event_type": event.event_type,
+            "event_id": event.event_id,
+            "message": "POS event accepted into dead-letter queue",
+        }
+
+    existing = _find_event_record(event_key)
+    if existing:
+        return {
+            "ok": True,
+            "status": "duplicate",
+            "duplicate": True,
+            "event_key": event_key,
+            "event_type": event.event_type,
+            "event_id": event.event_id,
+            "first_received_at": existing.get("received_at"),
+            "message": "Duplicate POS event ignored idempotently",
+        }
+
     record = {
-        "received_at": now_iso(),
+        "received_at": received_at,
         "status": "received",
-        "event": event.model_dump(),
-        "note": "B2 skeleton only. Journal posting engine will be wired in the next batches.",
+        "event_key": event_key,
+        "event": event_data,
+        "note": "B17 hardened receiver. Event stored idempotently for preview/draft/ledger pipeline.",
     }
-    with EVENT_STORE_PATH.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    _append_event_record(record)
     return {
         "ok": True,
         "status": "received",
+        "duplicate": False,
+        "event_key": event_key,
         "event_type": event.event_type,
         "event_id": event.event_id,
-        "message": "POS event accepted by Nexa Accounting skeleton",
+        "message": "POS event accepted by Nexa Accounting",
     }
 
 @app.get("/api/v1/integrations/pos/events/recent")
@@ -104,6 +211,8 @@ def _public_event_summary(record: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "received_at": record.get("received_at"),
         "status": record.get("status"),
+        "event_key": record.get("event_key") or _event_key_from_record(record),
+        "reason": record.get("reason"),
         "tenant_id": event.get("tenant_id"),
         "source": event.get("source"),
         "event_type": event.get("event_type"),
@@ -1027,5 +1136,198 @@ def simulated_trial_balance_report() -> Dict[str, Any]:
         },
         "rows": rows,
         "note": "Simulated trial balance only. Permanent accounting ledger is not enabled yet.",
+    }
+
+def _draft_key_for_event(event: Dict[str, Any]) -> str:
+    return f"{event.get('source') or 'unknown'}:{event.get('event_type') or 'unknown'}:{event.get('event_id') or 'unknown'}"
+
+
+def _find_draft_for_event(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    draft_key = _draft_key_for_event(event)
+    for draft in _read_journal_drafts(limit=20000):
+        if draft.get("draft_key") == draft_key:
+            return draft
+    return None
+
+
+def _event_pipeline_status(record: Dict[str, Any], records: Optional[list[Dict[str, Any]]] = None) -> Dict[str, Any]:
+    event = record.get("event") or {}
+    event_key = _event_key_from_record(record)
+
+    if record.get("status") == "dead_letter":
+        return {
+            "event_key": event_key,
+            "status": "dead_letter",
+            "received": False,
+            "previewed": False,
+            "drafted": False,
+            "posted_simulated": False,
+            "ledger_simulated": False,
+            "reason": record.get("reason"),
+        }
+
+    records = records or _read_event_records_chronological(limit=20000)
+    preview = _build_journal_preview(record, records=records)
+    draft = _find_draft_for_event(event)
+
+    ledger_entry = None
+    if draft:
+        ledger_entry = _existing_simulated_ledger_entry(_ledger_entry_key(draft))
+
+    if ledger_entry:
+        status = "ledger_simulated"
+    elif draft and draft.get("status") == "posted_simulated":
+        status = "posted_simulated"
+    elif draft:
+        status = "drafted"
+    elif preview:
+        status = "previewed"
+    else:
+        status = record.get("status") or "received"
+
+    return {
+        "event_key": event_key,
+        "status": status,
+        "received": True,
+        "previewed": bool(preview),
+        "drafted": bool(draft),
+        "draft_status": draft.get("status") if draft else None,
+        "draft_id": draft.get("id") if draft else None,
+        "posted_simulated": bool(draft and draft.get("status") == "posted_simulated"),
+        "ledger_simulated": bool(ledger_entry),
+        "ledger_entry_id": ledger_entry.get("id") if ledger_entry else None,
+        "reason": record.get("reason"),
+    }
+
+
+def _public_event_with_pipeline_status(record: Dict[str, Any], records: Optional[list[Dict[str, Any]]] = None) -> Dict[str, Any]:
+    base = _public_event_summary(record)
+    base["pipeline"] = _event_pipeline_status(record, records=records)
+    return base
+
+
+@app.get("/api/v1/events/status")
+def list_event_pipeline_status(limit: int = 100) -> Dict[str, Any]:
+    records = list(reversed(_read_event_records_chronological(limit=max(1, min(limit, 500)))))
+    return {
+        "ok": True,
+        "count": len(records),
+        "events": [_public_event_with_pipeline_status(record, records=list(reversed(records))) for record in records],
+        "note": "Public event pipeline metadata only. Payload values are not exposed.",
+    }
+
+
+@app.get("/api/v1/events/dead-letter")
+def list_dead_letter_events(_: None = Depends(require_internal_key)) -> Dict[str, Any]:
+    rows = []
+    if EVENT_DEAD_LETTER_STORE_PATH.exists():
+        for line in EVENT_DEAD_LETTER_STORE_PATH.read_text(encoding="utf-8").splitlines()[-500:]:
+            try:
+                row = json.loads(line)
+                if "event_key" not in row:
+                    row["event_key"] = _event_key_from_record(row)
+                rows.append(row)
+            except Exception:
+                continue
+
+    rows = list(reversed(rows))
+    return {
+        "ok": True,
+        "count": len(rows),
+        "items": rows,
+    }
+
+
+@app.post("/api/v1/events/{event_key}/reprocess")
+def reprocess_event(event_key: str, _: None = Depends(require_internal_key)) -> Dict[str, Any]:
+    record = _find_event_record(event_key)
+    if not record:
+        dead = _find_dead_letter_record(event_key)
+        if dead:
+            raise HTTPException(status_code=400, detail=f"Event is in dead-letter: {dead.get('reason')}")
+        raise HTTPException(status_code=404, detail="Event not found")
+
+    records = _read_event_records_chronological(limit=20000)
+    preview = _build_journal_preview(record, records=records)
+    if not preview:
+        dead = {
+            "received_at": now_iso(),
+            "status": "dead_letter",
+            "event_key": event_key,
+            "event": record.get("event") or {},
+            "reason": "no_preview_available",
+            "message": "Event could not be converted to journal preview",
+        }
+        _append_dead_letter_record(dead)
+        return {
+            "ok": True,
+            "status": "dead_letter",
+            "event_key": event_key,
+            "reason": "no_preview_available",
+        }
+
+    existing_draft = _find_draft_for_event(record.get("event") or {})
+    if existing_draft:
+        return {
+            "ok": True,
+            "status": "already_drafted",
+            "event_key": event_key,
+            "draft": _public_journal_draft_summary(existing_draft),
+            "pipeline": _event_pipeline_status(record, records=records),
+        }
+
+    now = now_iso()
+    draft_key = _journal_draft_key(preview)
+    draft = {
+        "id": f"jd_{hashlib.sha1(draft_key.encode('utf-8')).hexdigest()[:16]}",
+        "draft_key": draft_key,
+        "status": "draft",
+        "source": preview.get("source"),
+        "event_type": preview.get("event_type"),
+        "event_id": preview.get("event_id"),
+        "tenant_id": preview.get("tenant_id"),
+        "received_at": preview.get("received_at"),
+        "source_number": preview.get("source_number"),
+        "summary": preview.get("summary"),
+        "amount": preview.get("amount"),
+        "balanced": preview.get("balanced"),
+        "lines": preview.get("lines") or [],
+        "preview_meta": {
+            "paired_sale_completed_found": preview.get("paired_sale_completed_found"),
+            "reprocessed": True,
+        },
+        "created_at": now,
+        "updated_at": now,
+    }
+    _append_journal_draft(draft)
+
+    return {
+        "ok": True,
+        "status": "draft_created",
+        "event_key": event_key,
+        "draft": _public_journal_draft_summary(draft),
+        "pipeline": _event_pipeline_status(record, records=records),
+    }
+
+
+@app.get("/api/v1/events/{event_key}")
+def get_event_detail(event_key: str, _: None = Depends(require_internal_key)) -> Dict[str, Any]:
+    record = _find_event_record(event_key)
+    dead = None
+
+    if not record:
+        dead = _find_dead_letter_record(event_key)
+
+    if not record and not dead:
+        raise HTTPException(status_code=404, detail="Event not found")
+
+    selected = record or dead
+    records = _read_event_records_chronological(limit=20000)
+
+    return {
+        "ok": True,
+        "event_key": event_key,
+        "record": selected,
+        "pipeline": _event_pipeline_status(selected, records=records),
     }
 
