@@ -74,7 +74,18 @@
         <div id="journal-preview-body" class="empty">Loading journal previews...</div>
       </section>
 
-      <div class="footer"><strong>API:</strong> <code>/api/health</code> · <strong>Recent events:</strong> <code>/api/v1/events/recent-public</code> · <strong>Journal preview:</strong> <code>/api/v1/journal-preview/queue</code> · <strong>Source:</strong> /data/accounting/app/nexa-accounting</div>
+      <section class="draft-queue">
+        <div class="events-head">
+          <div>
+            <h2>Draft Journal Queue</h2>
+            <p>Persistent journal drafts generated from previews. These are not posted to the ledger yet.</p>
+          </div>
+          <div id="journal-draft-count" class="pill">Loading...</div>
+        </div>
+        <div id="journal-draft-body" class="empty">Loading draft journals...</div>
+      </section>
+
+      <div class="footer"><strong>API:</strong> <code>/api/health</code> · <strong>Recent events:</strong> <code>/api/v1/events/recent-public</code> · <strong>Journal preview:</strong> <code>/api/v1/journal-preview/queue</code> · <strong>Drafts:</strong> <code>/api/v1/journal-drafts/public</code> · <strong>Source:</strong> /data/accounting/app/nexa-accounting</div>
     </main>
   </div>
   <script>
@@ -218,7 +229,43 @@
     }
 
     loadRecentEvents();
+
+    function loadJournalDraftQueue() {
+      fetch("/api/v1/journal-drafts/public")
+        .then(r => r.json())
+        .then(data => {
+          const items = data && Array.isArray(data.items) ? data.items : [];
+          document.querySelector("#journal-draft-count").textContent = items.length + " draft" + (items.length === 1 ? "" : "s");
+
+          if (!items.length) {
+            document.querySelector("#journal-draft-body").className = "empty";
+            document.querySelector("#journal-draft-body").textContent = "No journal drafts generated yet.";
+            return;
+          }
+
+          const html = `<div class="draft-list">` + items.map((item) => `
+            <div class="draft-item">
+              <div>
+                <div class="draft-name">${escapeHtml(item.summary || item.event_type || "-")}</div>
+                <div class="draft-meta">${escapeHtml(item.event_type || "-")} · ${escapeHtml(item.source_number || item.event_id || "-")} · ${escapeHtml(shortTime(item.created_at))}</div>
+                <div class="draft-meta">${Number(item.amount || 0).toLocaleString()} · ${item.line_count || 0} lines · ${item.balanced ? "balanced" : "unbalanced"}</div>
+              </div>
+              <div class="draft-status">${escapeHtml(item.status || "draft")}</div>
+            </div>
+          `).join("") + `</div>`;
+
+          document.querySelector("#journal-draft-body").className = "";
+          document.querySelector("#journal-draft-body").innerHTML = html;
+        })
+        .catch(() => {
+          document.querySelector("#journal-draft-count").textContent = "Offline";
+          document.querySelector("#journal-draft-body").className = "empty";
+          document.querySelector("#journal-draft-body").textContent = "Could not load journal draft queue.";
+        });
+    }
+
     loadJournalPreviewQueue();
+    loadJournalDraftQueue();
   </script>
 </body>
 </html>

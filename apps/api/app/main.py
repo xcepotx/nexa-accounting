@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 from datetime import datetime, timezone
@@ -15,6 +16,7 @@ APP_NAME = os.getenv("APP_NAME", "Nexa Accounting API")
 APP_ENV = os.getenv("APP_ENV", "production")
 INTERNAL_API_KEY = os.getenv("INTERNAL_API_KEY", "")
 EVENT_STORE_PATH = Path(os.getenv("EVENT_STORE_PATH", "/tmp/nexa_accounting_events.jsonl"))
+JOURNAL_DRAFT_STORE_PATH = Path(os.getenv("JOURNAL_DRAFT_STORE_PATH", "/data/accounting/app/nexa-accounting/data/journal_drafts.jsonl"))
 
 app = FastAPI(title=APP_NAME, version="0.1.0")
 
@@ -129,6 +131,15 @@ def recent_events_public() -> Dict[str, Any]:
         "events": rows,
         "note": "Public dashboard endpoint returns metadata only; payload values are not exposed.",
     }
+
+def _json_default(value: Any) -> str:
+    try:
+        if hasattr(value, "isoformat"):
+            return value.isoformat()
+    except Exception:
+        pass
+    return str(value)
+
 
 def _money(value: Any) -> float:
     try:
@@ -339,5 +350,130 @@ def journal_preview_queue(limit: int = 50) -> Dict[str, Any]:
         "count": len(previews),
         "items": previews,
         "note": "B9 preview queue only. No permanent ledger posting is performed yet.",
+    }
+
+def _journal_draft_key(item: Dict[str, Any]) -> str:
+    return f"{item.get('source') or 'unknown'}:{item.get('event_type') or 'unknown'}:{item.get('event_id') or 'unknown'}"
+
+
+def _read_journal_drafts(limit: int = 500) -> list[Dict[str, Any]]:
+    if not JOURNAL_DRAFT_STORE_PATH.exists():
+        return []
+
+    rows = []
+    for line in JOURNAL_DRAFT_STORE_PATH.read_text(encoding="utf-8").splitlines()[-limit:]:
+        try:
+            rows.append(json.loads(line))
+        except Exception:
+            continue
+
+    return list(reversed(rows))
+
+
+def _append_journal_draft(draft: Dict[str, Any]) -> None:
+    JOURNAL_DRAFT_STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with JOURNAL_DRAFT_STORE_PATH.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(draft, ensure_ascii=False, default=_json_default) + "\n")
+
+
+def _public_journal_draft_summary(draft: Dict[str, Any]) -> Dict[str, Any]:
+    lines = draft.get("lines") or []
+    return {
+        "id": draft.get("id"),
+        "draft_key": draft.get("draft_key"),
+        "status": draft.get("status"),
+        "source": draft.get("source"),
+        "event_type": draft.get("event_type"),
+        "event_id": draft.get("event_id"),
+        "tenant_id": draft.get("tenant_id"),
+        "source_number": draft.get("source_number"),
+        "summary": draft.get("summary"),
+        "amount": draft.get("amount"),
+        "balanced": draft.get("balanced"),
+        "line_count": len(lines),
+        "created_at": draft.get("created_at"),
+        "updated_at": draft.get("updated_at"),
+    }
+
+
+@app.get("/api/v1/journal-drafts")
+def list_journal_drafts(_: None = Depends(require_internal_key)) -> Dict[str, Any]:
+    drafts = _read_journal_drafts()
+    return {
+        "ok": True,
+        "count": len(drafts),
+        "items": drafts,
+    }
+
+
+@app.get("/api/v1/journal-drafts/public")
+def list_journal_drafts_public() -> Dict[str, Any]:
+    drafts = _read_journal_drafts()
+    return {
+        "ok": True,
+        "count": len(drafts),
+        "items": [_public_journal_draft_summary(d) for d in drafts],
+        "note": "Public dashboard endpoint returns draft metadata only.",
+    }
+
+
+@app.post("/api/v1/journal-drafts/generate-from-previews")
+def generate_journal_drafts_from_previews(_: None = Depends(require_internal_key)) -> Dict[str, Any]:
+    records = _event_records(limit=200)
+    existing = _read_journal_drafts(limit=10000)
+    existing_keys = {d.get("draft_key") for d in existing if d.get("draft_key")}
+
+    created = []
+    skipped = []
+
+    for record in records:
+        preview = _build_journal_preview(record, records=records)
+        if not preview:
+            continue
+
+        draft_key = _journal_draft_key(preview)
+
+        if draft_key in existing_keys:
+            skipped.append({
+                "draft_key": draft_key,
+                "reason": "already_exists",
+                "event_type": preview.get("event_type"),
+                "event_id": preview.get("event_id"),
+            })
+            continue
+
+        now = now_iso()
+        draft = {
+            "id": f"jd_{hashlib.sha1(draft_key.encode('utf-8')).hexdigest()[:16]}",
+            "draft_key": draft_key,
+            "status": "draft",
+            "source": preview.get("source"),
+            "event_type": preview.get("event_type"),
+            "event_id": preview.get("event_id"),
+            "tenant_id": preview.get("tenant_id"),
+            "received_at": preview.get("received_at"),
+            "source_number": preview.get("source_number"),
+            "summary": preview.get("summary"),
+            "amount": preview.get("amount"),
+            "balanced": preview.get("balanced"),
+            "lines": preview.get("lines") or [],
+            "preview_meta": {
+                "paired_sale_completed_found": preview.get("paired_sale_completed_found"),
+            },
+            "created_at": now,
+            "updated_at": now,
+        }
+
+        _append_journal_draft(draft)
+        existing_keys.add(draft_key)
+        created.append(_public_journal_draft_summary(draft))
+
+    return {
+        "ok": True,
+        "created_count": len(created),
+        "skipped_count": len(skipped),
+        "created": created,
+        "skipped": skipped[:50],
+        "note": "Drafts generated only. No permanent ledger posting was performed.",
     }
 

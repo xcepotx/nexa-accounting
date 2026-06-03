@@ -24,3 +24,10 @@ Thumbs.db
 
 # local patch backups
 backups-*/
+
+# runtime journal/event stores
+data/*.jsonl
+data/events/*.jsonl
+
+# local patch backups
+backups-*/
