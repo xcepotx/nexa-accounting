@@ -67,6 +67,18 @@
     .crumb{font-size:12px;color:var(--muted);font-weight:800;text-transform:uppercase;letter-spacing:.12em}
     h1{font-size:30px;line-height:1.1;margin:6px 0 0;letter-spacing:-.045em}
     .subtitle{color:var(--muted);font-size:14px;margin-top:8px;line-height:1.6}
+    
+    .auth-panel{
+      display:flex;gap:10px;align-items:center;flex-wrap:wrap;
+      background:rgba(255,255,255,.9);border:1px solid var(--line);
+      padding:10px;border-radius:18px;box-shadow:var(--shadow);
+    }
+    .auth-panel input{
+      height:34px;border:1px solid var(--line);border-radius:12px;
+      padding:0 10px;font-weight:700;min-width:180px;
+    }
+    .auth-user{font-size:12px;font-weight:900;color:#334155}
+
     .status-pill{
       display:inline-flex;align-items:center;gap:8px;
       background:#ecfdf5;color:#166534;border:1px solid #bbf7d0;
@@ -233,27 +245,34 @@
           <h1 id="page-title">Accounting Command Center</h1>
           <div class="subtitle" id="page-subtitle">Monitor POS events, previews, drafts, simulated ledger, and reports.</div>
         </div>
+        <div class="auth-panel" id="auth-panel">
+          <input id="login-email" placeholder="email" autocomplete="username" />
+          <input id="login-password" type="password" placeholder="password" autocomplete="current-password" />
+          <button data-protected-action="true" class="button primary" onclick="loginOperator()">Login</button>
+          <button class="button" onclick="logoutOperator()">Logout</button>
+          <span class="auth-user" id="auth-user-status">Not logged in</span>
+        </div>
         <div class="status-pill" id="api-status"><span class="dot"></span><span>Checking API...</span></div>
       </div>
 
       <div class="action-panel" id="console-actions">
         <div class="operator-key-panel">
           <div class="label">Operator Key</div>
-          <input class="input" id="operator-key-input" type="password" placeholder="Paste internal API key for protected actions" />
+          <input class="input" id="operator-key-input" type="password" placeholder="Optional fallback internal key" />
           <button class="button" id="save-key-button" onclick="saveOperatorKey()">Save Key</button>
           <button class="button red" onclick="clearOperatorKey()">Clear</button>
-          <span class="muted" id="operator-key-status">No key saved in this browser.</span>
+          <span class="muted" id="operator-key-status">No fallback key saved.</span>
         </div>
         <div class="action-row">
           <button class="button dark" onclick="reloadAll()">Refresh Console</button>
-          <button class="button primary" onclick="runProtectedAction('Generate Drafts', '/api/v1/journal-drafts/generate-from-previews', {})">Generate Drafts</button>
-          <button class="button orange" onclick="runProtectedAction('Post All Simulated', '/api/v1/journal-drafts/post-all-simulated', {posted_by:'console', note:'B22 console post all simulated'})">Post All Simulated</button>
-          <button class="button green" onclick="runProtectedActionSequence('Materialize Ledger + Sync DB', [{label:'Materialize simulated ledger', url:'/api/v1/simulated-ledger/materialize-posted-drafts', body:{}}, {label:'Sync SQLite ledger DB', url:'/api/v1/ledger-db/backfill-from-simulated', body:{}}])">Materialize Ledger + Sync DB</button>
+          <button data-protected-action="true" class="button primary" onclick="runProtectedAction('Generate Drafts', '/api/v1/journal-drafts/generate-from-previews', {})">Generate Drafts</button>
+          <button data-protected-action="true" class="button orange" onclick="runProtectedAction('Post All Simulated', '/api/v1/journal-drafts/post-all-simulated', {posted_by:'console', note:'B22 console post all simulated'})">Post All Simulated</button>
+          <button data-protected-action="true" class="button green" onclick="runProtectedActionSequence('Materialize Ledger + Sync DB', [{label:'Materialize simulated ledger', url:'/api/v1/simulated-ledger/materialize-posted-drafts', body:{}}, {label:'Sync SQLite ledger DB', url:'/api/v1/ledger-db/backfill-from-simulated', body:{}}])">Materialize Ledger + Sync DB</button>
         </div>
         <div class="action-summary-grid" id="action-summary"></div>
         <div class="action-guidance" id="action-guidance">
           <div><strong>Suggested flow:</strong> Generate Drafts → Post All Simulated → Materialize Ledger → Refresh Console.</div>
-          <div class="muted">Protected actions require the Operator Key. The key is only stored locally in this browser.</div>
+          <div class="muted">Protected actions use login token. Operator Key is fallback admin mode only.</div>
         </div>
         <div class="action-log" id="action-log"></div>
       </div>
@@ -367,7 +386,7 @@
 
       <section id="route-settings" class="route">
         <div class="toolbar">
-          <button class="button primary" onclick="runProtectedAction('Seed COA Defaults', '/api/v1/settings/seed-defaults', {})">Seed Defaults</button>
+          <button data-protected-action="true" class="button primary" onclick="runProtectedAction('Seed COA Defaults', '/api/v1/settings/seed-defaults', {})">Seed Defaults</button>
           <button class="button dark" onclick="reloadAll()">Refresh Settings</button>
         </div>
         <div class="settings-grid">
@@ -436,6 +455,100 @@ function statusBadge(status){
   return badge(s,"warn");
 }
 
+
+function getAuthToken(){
+  return localStorage.getItem("nexaAccountingAuthToken") || "";
+}
+function getAuthUser(){
+  try{return JSON.parse(localStorage.getItem("nexaAccountingAuthUser") || "null");}catch(_){return null;}
+}
+function setAuth(token, user){
+  localStorage.setItem("nexaAccountingAuthToken", token || "");
+  localStorage.setItem("nexaAccountingAuthUser", JSON.stringify(user || null));
+  updateAuthStatus();
+}
+function clearAuth(){
+  localStorage.removeItem("nexaAccountingAuthToken");
+  localStorage.removeItem("nexaAccountingAuthUser");
+  updateAuthStatus();
+}
+function authHeaders(){
+  const token = getAuthToken();
+  if(token){
+    return {"Authorization": "Bearer " + token};
+  }
+  const key = getOperatorKey() || (document.getElementById("operator-key-input")?.value || "").trim();
+  if(key){
+    return {...authHeaders()};
+  }
+  return {};
+}
+function canRunProtectedActions(){
+  const user = getAuthUser();
+  if(!user) return Boolean(getOperatorKey());
+  return ["owner","accountant"].includes(user.role);
+}
+function updateAuthStatus(){
+  const user = getAuthUser();
+  const el = document.getElementById("auth-user-status");
+  if(el){
+    el.textContent = user ? `${user.name || user.email} · ${user.role}` : "Not logged in";
+  }
+  document.querySelectorAll("[data-protected-action='true']").forEach(btn => {
+    btn.disabled = !canRunProtectedActions();
+  });
+}
+async function loginOperator(){
+  const email = (document.getElementById("login-email")?.value || "").trim();
+  const password = (document.getElementById("login-password")?.value || "").trim();
+  if(!email || !password){
+    showActionLog("Login requires email and password.", true);
+    return;
+  }
+
+  try{
+    const res = await fetch("/api/v1/auth/login", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({email, password})
+    });
+    const data = await res.json();
+    if(!res.ok){
+      showActionLog("Login failed: " + JSON.stringify(data, null, 2), true);
+      return;
+    }
+    setAuth(data.access_token, data.user);
+    const pass = document.getElementById("login-password");
+    if(pass) pass.value = "";
+    showActionLog("Login successful as " + data.user.email + " (" + data.user.role + ").", false);
+    await reloadAll();
+  }catch(err){
+    showActionLog("Login failed: " + err.message, true);
+  }
+}
+function logoutOperator(){
+  clearAuth();
+  showActionLog("Logged out.", false);
+}
+async function loadMe(){
+  const token = getAuthToken();
+  if(!token){
+    updateAuthStatus();
+    return;
+  }
+  try{
+    const res = await fetch("/api/v1/auth/me", {headers: {"Authorization": "Bearer " + token}});
+    const data = await res.json();
+    if(res.ok && data.user){
+      setAuth(token, data.user);
+    }else{
+      clearAuth();
+    }
+  }catch(_){
+    updateAuthStatus();
+  }
+}
+
 function getOperatorKey(){
   return localStorage.getItem("nexaAccountingOperatorKey") || "";
 }
@@ -444,7 +557,7 @@ function updateOperatorKeyStatus(){
   const input = document.getElementById("operator-key-input");
   const status = document.getElementById("operator-key-status");
   if(input && key && !input.value) input.value = key;
-  if(status) status.textContent = key ? "Key saved locally in this browser." : "No key saved in this browser.";
+  if(status) status.textContent = key ? "Key saved locally in this browser." : "No fallback key saved.";
 }
 function saveOperatorKey(){
   const input = document.getElementById("operator-key-input");
@@ -474,12 +587,12 @@ function showActionLog(message, isError=false){
 
 async function runProtectedActionSequence(label, steps){
   const key = getOperatorKey() || (document.getElementById("operator-key-input")?.value || "").trim();
-  if(!key){
-    showActionLog(label + " blocked: operator key is required for protected action endpoints.", true);
+  if(!getAuthToken() && !key){
+    showActionLog(label + " blocked: login or fallback operator key is required for protected action endpoints.", true);
     return;
   }
 
-  localStorage.setItem("nexaAccountingOperatorKey", key);
+  if(!getAuthToken() && key){ localStorage.setItem("nexaAccountingOperatorKey", key); }
   updateOperatorKeyStatus();
 
   const results = [];
@@ -492,7 +605,7 @@ async function runProtectedActionSequence(label, steps){
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "X-Internal-API-Key": key
+          ...authHeaders()
         },
         body: JSON.stringify(step.body || {})
       });
@@ -518,12 +631,12 @@ async function runProtectedActionSequence(label, steps){
 
 async function runProtectedAction(label, url, body){
   const key = getOperatorKey() || (document.getElementById("operator-key-input")?.value || "").trim();
-  if(!key){
-    showActionLog(label + " blocked: operator key is required for protected action endpoints.", true);
+  if(!getAuthToken() && !key){
+    showActionLog(label + " blocked: login or fallback operator key is required for protected action endpoints.", true);
     return;
   }
 
-  localStorage.setItem("nexaAccountingOperatorKey", key);
+  if(!getAuthToken() && key){ localStorage.setItem("nexaAccountingOperatorKey", key); }
   updateOperatorKeyStatus();
   showActionLog("Running " + label + "...", false);
 
@@ -532,7 +645,7 @@ async function runProtectedAction(label, url, body){
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-Internal-API-Key": key
+        ...authHeaders()
       },
       body: JSON.stringify(body || {})
     });
@@ -696,7 +809,7 @@ function renderActionSummary(){
 
     guidance.innerHTML = `
       <div>${message}</div>
-      <div class="muted">Protected actions require the Operator Key. Suggested flow: Generate Drafts → Post All Simulated → Materialize Ledger → Refresh Console.</div>
+      <div class="muted">Protected actions use login token. Suggested flow: Generate Drafts → Post All Simulated → Materialize Ledger → Refresh Console.</div>
     `;
   }
 }

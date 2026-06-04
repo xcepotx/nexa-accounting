@@ -1,5 +1,9 @@
 import hashlib
 import json
+import time
+import secrets
+import hmac
+import base64
 import sqlite3
 import os
 from datetime import datetime, timezone
@@ -16,6 +20,11 @@ load_dotenv()
 APP_NAME = os.getenv("APP_NAME", "Nexa Accounting API")
 APP_ENV = os.getenv("APP_ENV", "production")
 INTERNAL_API_KEY = os.getenv("INTERNAL_API_KEY", "")
+ACCOUNTING_AUTH_SECRET_KEY = os.getenv("ACCOUNTING_AUTH_SECRET_KEY", INTERNAL_API_KEY or "dev-change-me")
+ACCOUNTING_TOKEN_TTL_SECONDS = int(os.getenv("ACCOUNTING_TOKEN_TTL_SECONDS", "86400") or 86400)
+APP_USER_STORE_PATH = Path(os.getenv("APP_USER_STORE_PATH", "/data/accounting/app/nexa-accounting/data/app_users.json"))
+ACCOUNTING_OWNER_EMAIL = os.getenv("ACCOUNTING_OWNER_EMAIL", "owner@nexa-accounting.local")
+ACCOUNTING_OWNER_PASSWORD = os.getenv("ACCOUNTING_OWNER_PASSWORD", "")
 EVENT_STORE_PATH = Path(os.getenv("EVENT_STORE_PATH", "/tmp/nexa_accounting_events.jsonl"))
 EVENT_DEAD_LETTER_STORE_PATH = Path(os.getenv("EVENT_DEAD_LETTER_STORE_PATH", "/data/accounting/app/nexa-accounting/data/dead_letter_events.jsonl"))
 JOURNAL_DRAFT_STORE_PATH = Path(os.getenv("JOURNAL_DRAFT_STORE_PATH", "/data/accounting/app/nexa-accounting/data/journal_drafts.jsonl"))
@@ -44,14 +53,198 @@ class PosEvent(BaseModel):
     occurred_at: Optional[str] = None
     payload: Dict[str, Any] = Field(default_factory=dict)
 
+
+class LoginRequest(BaseModel):
+    email: str = Field(..., min_length=3)
+    password: str = Field(..., min_length=1)
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
-def require_internal_key(x_internal_api_key: str = Header(default="")) -> None:
+def _b64url_encode(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).decode("utf-8").rstrip("=")
+
+
+def _b64url_decode(data: str) -> bytes:
+    padding = "=" * (-len(data) % 4)
+    return base64.urlsafe_b64decode((data + padding).encode("utf-8"))
+
+
+def _password_hash(password: str, salt: Optional[str] = None) -> str:
+    salt = salt or secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 160000)
+    return f"pbkdf2_sha256${salt}${digest.hex()}"
+
+
+def _verify_password(password: str, stored_hash: str) -> bool:
+    try:
+        algo, salt, digest = stored_hash.split("$", 2)
+        if algo != "pbkdf2_sha256":
+            return False
+        expected = _password_hash(password, salt)
+        return hmac.compare_digest(expected, stored_hash)
+    except Exception:
+        return False
+
+
+def _read_app_users() -> list[Dict[str, Any]]:
+    _seed_default_owner_user_if_missing()
+    return _read_json_file(APP_USER_STORE_PATH, [])
+
+
+def _write_app_users(users: list[Dict[str, Any]]) -> None:
+    _write_json_file(APP_USER_STORE_PATH, users)
+
+
+def _seed_default_owner_user_if_missing() -> None:
+    if APP_USER_STORE_PATH.exists():
+        return
+
+    if not ACCOUNTING_OWNER_PASSWORD:
+        generated = secrets.token_urlsafe(18)
+        password = generated
+    else:
+        password = ACCOUNTING_OWNER_PASSWORD
+
+    user = {
+        "id": "owner",
+        "email": ACCOUNTING_OWNER_EMAIL.lower().strip(),
+        "name": "Owner",
+        "role": "owner",
+        "is_active": True,
+        "password_hash": _password_hash(password),
+        "created_at": now_iso(),
+        "updated_at": now_iso(),
+        "note": "Default owner user seeded from ACCOUNTING_OWNER_EMAIL / ACCOUNTING_OWNER_PASSWORD.",
+    }
+    _write_json_file(APP_USER_STORE_PATH, [user])
+
+
+def _public_user(user: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "id": user.get("id"),
+        "email": user.get("email"),
+        "name": user.get("name"),
+        "role": user.get("role"),
+        "is_active": bool(user.get("is_active", True)),
+    }
+
+
+def _auth_sign(payload: str) -> str:
+    return hmac.new(ACCOUNTING_AUTH_SECRET_KEY.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _create_auth_token(user: Dict[str, Any]) -> str:
+    now_ts = int(time.time())
+    payload = {
+        "sub": user.get("id"),
+        "email": user.get("email"),
+        "role": user.get("role"),
+        "iat": now_ts,
+        "exp": now_ts + ACCOUNTING_TOKEN_TTL_SECONDS,
+    }
+    payload_raw = _b64url_encode(json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+    signature = _auth_sign(payload_raw)
+    return f"{payload_raw}.{signature}"
+
+
+def _verify_auth_token(token: str) -> Dict[str, Any]:
+    if not token or "." not in token:
+        raise HTTPException(status_code=401, detail="Invalid bearer token")
+
+    payload_raw, signature = token.rsplit(".", 1)
+    expected = _auth_sign(payload_raw)
+
+    if not hmac.compare_digest(signature, expected):
+        raise HTTPException(status_code=401, detail="Invalid bearer token signature")
+
+    try:
+        payload = json.loads(_b64url_decode(payload_raw).decode("utf-8"))
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid bearer token payload")
+
+    if int(payload.get("exp") or 0) < int(time.time()):
+        raise HTTPException(status_code=401, detail="Bearer token expired")
+
+    users = _read_app_users()
+    for user in users:
+        if user.get("id") == payload.get("sub") and user.get("is_active", True):
+            return user
+
+    raise HTTPException(status_code=401, detail="User not found or inactive")
+
+
+def get_current_user_optional(authorization: str = Header(default="")) -> Optional[Dict[str, Any]]:
+    if not authorization:
+        return None
+
+    prefix = "Bearer "
+    if not authorization.startswith(prefix):
+        return None
+
+    token = authorization[len(prefix):].strip()
+    return _verify_auth_token(token)
+
+
+def require_user_roles(*roles: str):
+    def dependency(authorization: str = Header(default="")) -> Dict[str, Any]:
+        user = get_current_user_optional(authorization)
+        if not user:
+            raise HTTPException(status_code=401, detail="Authentication required")
+        if roles and user.get("role") not in roles:
+            raise HTTPException(status_code=403, detail="Insufficient role")
+        return user
+    return dependency
+
+
+def require_internal_key(
+    x_internal_api_key: str = Header(default=""),
+    authorization: str = Header(default=""),
+) -> None:
+    if INTERNAL_API_KEY and x_internal_api_key == INTERNAL_API_KEY:
+        return
+
+    # Console operator auth: owner/accountant may call protected operational endpoints.
+    if authorization.startswith("Bearer "):
+        user = _verify_auth_token(authorization[len("Bearer "):].strip())
+        if user.get("role") in {"owner", "accountant"}:
+            return
+        raise HTTPException(status_code=403, detail="Insufficient role")
+
     if not INTERNAL_API_KEY:
         raise HTTPException(status_code=500, detail="Internal API key is not configured")
-    if x_internal_api_key != INTERNAL_API_KEY:
-        raise HTTPException(status_code=401, detail="Invalid internal API key")
+
+    raise HTTPException(status_code=401, detail="Invalid internal API key")
+
+
+@app.post("/api/v1/auth/login")
+def auth_login(body: LoginRequest) -> Dict[str, Any]:
+    email = body.email.lower().strip()
+    users = _read_app_users()
+
+    for user in users:
+        if user.get("email") == email and user.get("is_active", True):
+            if not _verify_password(body.password, user.get("password_hash") or ""):
+                break
+
+            token = _create_auth_token(user)
+            return {
+                "ok": True,
+                "access_token": token,
+                "token_type": "bearer",
+                "expires_in": ACCOUNTING_TOKEN_TTL_SECONDS,
+                "user": _public_user(user),
+            }
+
+    raise HTTPException(status_code=401, detail="Invalid email or password")
+
+
+@app.get("/api/v1/auth/me")
+def auth_me(user: Dict[str, Any] = Depends(require_user_roles("owner", "accountant", "viewer"))) -> Dict[str, Any]:
+    return {
+        "ok": True,
+        "user": _public_user(user),
+    }
 
 @app.get("/health")
 @app.get("/api/health")

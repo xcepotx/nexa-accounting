@@ -41,3 +41,6 @@ data/
 # local sqlite databases
 data/*.db
 data/*.db-*
+
+# local auth runtime store
+data/app_users.json
