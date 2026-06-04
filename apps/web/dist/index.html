@@ -407,6 +407,16 @@
           </div>
           <div id="balance-sheet-table"></div>
         </div>
+
+        <div style="height:16px"></div>
+        <div class="card">
+          <div class="section-title">
+            <div><h2>Balance Diagnostics</h2><p>Account classification and imbalance diagnostics before any opening balance or correction entry.</p></div>
+          </div>
+          <div id="balance-diagnostics-summary"></div>
+          <div style="height:12px"></div>
+          <div id="balance-diagnostics-table"></div>
+        </div>
       </section>
 
       <section id="route-settings" class="route">
@@ -460,6 +470,7 @@ const state = {
   trialBalance: null,
   profitLoss: null,
   balanceSheet: null,
+  balanceDiagnostics: null,
   chartAccounts: [],
   accountMappings: [],
   users: [],
@@ -871,7 +882,7 @@ function setSelectOptions(id, values){
 async function reloadAll(){
   document.querySelector("#api-status span:last-child").textContent = "Loading...";
   try{
-    const [health, eventsStatus, previews, drafts, ledgerEntries, ledgerSummary, trialBalance, profitLoss, balanceSheet, chartAccounts, accountMappings] = await Promise.all([
+    const [health, eventsStatus, previews, drafts, ledgerEntries, ledgerSummary, trialBalance, profitLoss, balanceSheet, balanceDiagnostics, chartAccounts, accountMappings] = await Promise.all([
       fetchJson("/api/health"),
       fetchJson("/api/v1/events/status?limit=300"),
       fetchJson("/api/v1/journal-preview/queue?limit=300"),
@@ -881,6 +892,7 @@ async function reloadAll(){
       fetchJson("/api/v1/reports/trial-balance-db"),
       fetchJson("/api/v1/reports/profit-loss-db"),
       fetchJson("/api/v1/reports/balance-sheet-db"),
+      fetchJson("/api/v1/reports/balance-sheet-diagnostics-db"),
       fetchJson("/api/v1/settings/chart-of-accounts"),
       fetchJson("/api/v1/settings/account-mappings"),
     ]);
@@ -894,6 +906,7 @@ async function reloadAll(){
     state.trialBalance = trialBalance;
     state.profitLoss = profitLoss;
     state.balanceSheet = balanceSheet;
+    state.balanceDiagnostics = balanceDiagnostics;
     state.chartAccounts = chartAccounts.items || [];
     state.accountMappings = accountMappings.items || [];
 
@@ -1264,6 +1277,61 @@ function renderBalanceSheetTable(){
   ], rows);
 }
 
+
+function renderBalanceDiagnosticsTable(){
+  const report = state.balanceDiagnostics || {};
+  const summary = report.summary || {};
+  const causes = report.likely_causes || [];
+  const rows = report.rows || [];
+
+  const summaryEl = document.getElementById("balance-diagnostics-summary");
+  if(summaryEl){
+    summaryEl.innerHTML = `
+      <div class="grid cards" style="grid-template-columns:repeat(auto-fit,minmax(180px,1fr))">
+        ${metric("BS Status", summary.balance_sheet_balanced ? "Balanced" : "Needs Review", "Difference: " + money(summary.balance_sheet_difference))}
+        ${metric("Unknown Accounts", summary.unknown_account_count || 0, "Must be classified in COA")}
+        ${metric("Negative Liabilities", summary.negative_liability_count || 0, "Review AP/payment timing")}
+        ${metric("Net Income Bridge", money(summary.current_period_net_income), "From P&L report")}
+      </div>
+      <div style="height:12px"></div>
+      <div class="details">
+        ${causes.length ? causes.map(c => `
+          <div class="detail-card">
+            <div class="detail-title">${escapeHtml(c.title || "Diagnostic")}</div>
+            <div class="detail-meta">${escapeHtml(c.detail || "")}</div>
+          </div>
+        `).join("") : `<div class="empty">No diagnostic issue detected.</div>`}
+      </div>
+    `;
+  }
+
+  const tableRows = rows.map(row => `
+    <tr>
+      <td>${row.severity === "high" ? badge("high","bad") : row.severity === "medium" ? badge("medium","warn") : row.severity === "info" ? badge("info","blue") : badge("ok","ok")}</td>
+      <td class="mono">${escapeHtml(row.account_code)}</td>
+      <td>${escapeHtml(row.account_name)}</td>
+      <td>${badge(row.account_type || "unknown", row.account_type === "unknown" ? "bad" : "blue")}</td>
+      <td>${escapeHtml(row.section || "-")}</td>
+      <td class="right">${money(row.debit)}</td>
+      <td class="right">${money(row.credit)}</td>
+      <td class="right">${money(row.amount)}</td>
+      <td>${escapeHtml(row.issue || "")}</td>
+    </tr>
+  `);
+
+  document.getElementById("balance-diagnostics-table").innerHTML = table([
+    {label:"Severity"},
+    {label:"Code"},
+    {label:"Account"},
+    {label:"Type"},
+    {label:"Section"},
+    {label:"Debit",right:true},
+    {label:"Credit",right:true},
+    {label:"Amount",right:true},
+    {label:"Issue"}
+  ], tableRows);
+}
+
 function renderReports(){
   const tb = state.trialBalance?.summary || {};
   const pl = state.profitLoss?.summary || {};
@@ -1306,6 +1374,7 @@ function renderReports(){
 
   renderProfitLossTable();
   renderBalanceSheetTable();
+  renderBalanceDiagnosticsTable();
 }
 
 ["event-search","event-type-filter","event-status-filter","preview-search","preview-type-filter","draft-search","draft-status-filter"].forEach(id=>{

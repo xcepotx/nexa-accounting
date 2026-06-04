@@ -2835,3 +2835,192 @@ def balance_sheet_db_report() -> Dict[str, Any]:
         "note": "Balance Sheet generated from SQLite ledger DB and Chart of Accounts. Revenue/expense accounts are bridged through current period net income.",
     }
 
+@app.get("/api/v1/reports/balance-sheet-diagnostics-db")
+def balance_sheet_diagnostics_db_report() -> Dict[str, Any]:
+    _ledger_db_init()
+
+    accounts = {str(a.get("code")): a for a in _chart_of_accounts()}
+    bs = balance_sheet_db_report()
+    pl = profit_loss_db_report()
+    tb = trial_balance_db_report()
+
+    with _ledger_db_connect() as conn:
+        grouped = [
+            _db_row_to_dict(row)
+            for row in conn.execute("""
+                SELECT
+                  account_code,
+                  account_name,
+                  COUNT(*) AS line_count,
+                  COALESCE(SUM(debit), 0) AS debit,
+                  COALESCE(SUM(credit), 0) AS credit
+                FROM ledger_lines
+                GROUP BY account_code, account_name
+                ORDER BY account_code
+            """).fetchall()
+        ]
+
+    diagnostic_rows = []
+    unknown_accounts = []
+    negative_assets = []
+    negative_liabilities = []
+    negative_equity = []
+    p_and_l_rows = []
+    balance_sheet_rows = []
+
+    for row in grouped:
+        account_code = str(row.get("account_code") or "")
+        account = accounts.get(account_code)
+        account_type = (account or {}).get("type") or "unknown"
+        account_name = (account or {}).get("name") or row.get("account_name") or account_code
+
+        debit = _money(row.get("debit"))
+        credit = _money(row.get("credit"))
+
+        if account_type == "asset":
+            amount = _money(debit - credit)
+            section = "balance_sheet"
+            sign_issue = amount < 0
+        elif account_type in {"liability", "equity"}:
+            amount = _money(credit - debit)
+            section = "balance_sheet"
+            sign_issue = amount < 0
+        elif account_type == "revenue":
+            amount = _money(credit - debit)
+            section = "profit_loss"
+            sign_issue = amount < 0
+        elif account_type in {"contra_revenue", "expense"}:
+            amount = _money(debit - credit)
+            section = "profit_loss"
+            sign_issue = amount < 0
+        else:
+            amount = _money(debit - credit)
+            section = "unclassified"
+            sign_issue = amount != 0
+
+        issue = None
+        severity = "ok"
+
+        if account_type == "unknown":
+            issue = "Account is not found in Chart of Accounts, so it is excluded from formal P&L/Balance Sheet classification."
+            severity = "high"
+        elif account_type == "asset" and amount < 0:
+            issue = "Asset has credit balance."
+            severity = "medium"
+        elif account_type == "liability" and amount < 0:
+            issue = "Liability has debit balance. This can happen if supplier payments exceed AP/opening payable."
+            severity = "medium"
+        elif account_type == "equity" and amount < 0:
+            issue = "Equity has debit balance."
+            severity = "medium"
+        elif account_type in {"revenue", "contra_revenue", "expense"}:
+            issue = "P&L account; represented in Balance Sheet through current period net income."
+            severity = "info"
+
+        item = {
+            "account_code": account_code,
+            "account_name": account_name,
+            "account_type": account_type,
+            "section": section,
+            "line_count": int(row.get("line_count") or 0),
+            "debit": debit,
+            "credit": credit,
+            "amount": amount,
+            "issue": issue,
+            "severity": severity,
+            "sign_issue": sign_issue,
+        }
+        diagnostic_rows.append(item)
+
+        if account_type == "unknown":
+            unknown_accounts.append(item)
+        if account_type == "asset" and amount < 0:
+            negative_assets.append(item)
+        if account_type == "liability" and amount < 0:
+            negative_liabilities.append(item)
+        if account_type == "equity" and amount < 0:
+            negative_equity.append(item)
+        if section == "profit_loss":
+            p_and_l_rows.append(item)
+        if section == "balance_sheet":
+            balance_sheet_rows.append(item)
+
+    bs_summary = bs.get("summary") or {}
+    pl_summary = pl.get("summary") or {}
+    tb_summary = tb.get("summary") or {}
+
+    likely_causes = []
+
+    if unknown_accounts:
+        likely_causes.append({
+            "severity": "high",
+            "title": "Unclassified ledger accounts found",
+            "detail": "Some account codes in ledger DB do not exist in Chart of Accounts. Add them to COA with correct type.",
+            "count": len(unknown_accounts),
+        })
+
+    if negative_liabilities:
+        likely_causes.append({
+            "severity": "medium",
+            "title": "Negative liability balance",
+            "detail": "Accounts Payable or another liability has debit balance. This usually means payment was recorded without enough AP/opening payable.",
+            "count": len(negative_liabilities),
+        })
+
+    if not bs_summary.get("balanced"):
+        likely_causes.append({
+            "severity": "medium",
+            "title": "Balance Sheet difference exists",
+            "detail": "Difference may require account classification fix, opening balance, owner capital, retained earnings, or correction entry.",
+            "difference": bs_summary.get("difference"),
+        })
+
+    if not [row for row in balance_sheet_rows if row.get("account_type") == "equity"]:
+        likely_causes.append({
+            "severity": "info",
+            "title": "No equity account balance",
+            "detail": "If this dataset starts mid-period or after historical transactions, an opening equity/capital balance may be needed.",
+            "count": 0,
+        })
+
+    suggested_actions = [
+        "First fix unknown account classifications in Chart of Accounts.",
+        "Review negative liability accounts, especially Accounts Payable, against purchase receipts and supplier payments.",
+        "If the dataset starts mid-period, create opening balance / owner capital entry after classification is correct.",
+        "Do not force a balancing adjustment until unclassified accounts and negative AP are reviewed.",
+    ]
+
+    return {
+        "ok": True,
+        "report": "balance_sheet_diagnostics_db",
+        "basis": "sqlite_ledger_db",
+        "summary": {
+            "trial_balance_balanced": tb_summary.get("balanced"),
+            "balance_sheet_balanced": bs_summary.get("balanced"),
+            "balance_sheet_difference": bs_summary.get("difference"),
+            "assets": bs_summary.get("assets"),
+            "liabilities": bs_summary.get("liabilities"),
+            "equity": bs_summary.get("equity"),
+            "current_period_net_income": bs_summary.get("current_period_net_income"),
+            "liabilities_and_equity": bs_summary.get("liabilities_and_equity"),
+            "net_income": pl_summary.get("net_income"),
+            "unknown_account_count": len(unknown_accounts),
+            "negative_asset_count": len(negative_assets),
+            "negative_liability_count": len(negative_liabilities),
+            "negative_equity_count": len(negative_equity),
+            "diagnostic_row_count": len(diagnostic_rows),
+        },
+        "likely_causes": likely_causes,
+        "suggested_actions": suggested_actions,
+        "rows": diagnostic_rows,
+        "sections": {
+            "unknown_accounts": unknown_accounts,
+            "negative_assets": negative_assets,
+            "negative_liabilities": negative_liabilities,
+            "negative_equity": negative_equity,
+            "profit_loss_accounts": p_and_l_rows,
+            "balance_sheet_accounts": balance_sheet_rows,
+        },
+        "note": "Diagnostics only. No automatic balancing adjustment is posted by this endpoint.",
+    }
+
