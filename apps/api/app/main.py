@@ -85,6 +85,14 @@ class OpeningBalanceDraftRequest(BaseModel):
     reference: Optional[str] = None
     dry_run: bool = False
 
+
+class OpeningBalanceBatchDraftRequest(BaseModel):
+    account_codes: Optional[list[str]] = None
+    balancing_account_code: str = "3000"
+    tenant_id: str = "opening-balance"
+    reference_prefix: Optional[str] = None
+    dry_run: bool = False
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -3337,12 +3345,35 @@ def opening_balance_suggestions() -> Dict[str, Any]:
             "source_issue": item.get("issue"),
         })
 
+    # Ledger lines can contain the same account_code with historical account_name variants.
+    # Aggregate suggestions by account_code to avoid duplicate opening balance drafts/references.
+    aggregated: Dict[str, Dict[str, Any]] = {}
+    for item in items:
+        code = str(item.get("account_code") or "")
+        if not code:
+            continue
+
+        amount = _money(item.get("suggested_amount"))
+        if code not in aggregated:
+            aggregated[code] = dict(item)
+            aggregated[code]["suggested_amount"] = amount
+            aggregated[code]["source_issues"] = [item.get("source_issue")]
+            continue
+
+        aggregated[code]["suggested_amount"] = _money(_money(aggregated[code].get("suggested_amount")) + amount)
+        issues = aggregated[code].setdefault("source_issues", [])
+        if item.get("source_issue") and item.get("source_issue") not in issues:
+            issues.append(item.get("source_issue"))
+
+    unique_items = sorted(aggregated.values(), key=lambda x: str(x.get("account_code") or ""))
+
     return {
         "ok": True,
         "basis": "negative_accounts_db",
-        "count": len(items),
-        "items": items,
-        "note": "Suggestions only. Nothing is posted automatically.",
+        "count": len(unique_items),
+        "raw_count": len(items),
+        "items": unique_items,
+        "note": "Suggestions only. Nothing is posted automatically. Duplicate account codes are aggregated.",
     }
 
 
@@ -3451,5 +3482,101 @@ def create_opening_balance_draft(body: OpeningBalanceDraftRequest, _: None = Dep
         "draft": _public_journal_draft_summary(draft),
         "full_draft": draft,
         "note": "Post this draft using the existing Post All Simulated action, then Materialize Ledger + Sync DB.",
+    }
+
+@app.post("/api/v1/opening-balances/drafts/from-suggestions")
+def create_opening_balance_drafts_from_suggestions(body: OpeningBalanceBatchDraftRequest, _: None = Depends(require_internal_key)) -> Dict[str, Any]:
+    suggestions = opening_balance_suggestions().get("items", [])
+
+    requested_codes = None
+    if body.account_codes:
+        requested_codes = {str(code).strip() for code in body.account_codes if str(code).strip()}
+
+    if requested_codes:
+        suggestions = [
+            item for item in suggestions
+            if str(item.get("account_code")) in requested_codes
+        ]
+
+    reference_prefix = body.reference_prefix or f"OB-BATCH-{datetime.now(timezone.utc).strftime('%Y%m%d')}"
+    created = []
+    skipped = []
+    errors = []
+    dry_runs = []
+
+    for item in suggestions:
+        account_code = str(item.get("account_code") or "").strip()
+        amount = _money(item.get("suggested_amount"))
+        side = str(item.get("suggested_side") or "").strip().lower()
+
+        if not account_code or amount <= 0 or side not in {"debit", "credit"}:
+            skipped.append({
+                "account_code": account_code,
+                "reason": "invalid suggestion",
+                "suggestion": item,
+            })
+            continue
+
+        reference = f"{reference_prefix}-{account_code}"
+        request = OpeningBalanceDraftRequest(
+            account_code=account_code,
+            side=side,
+            amount=amount,
+            memo=f"Opening balance from suggestion for {account_code}",
+            balancing_account_code=body.balancing_account_code or "3000",
+            tenant_id=body.tenant_id or "opening-balance",
+            reference=reference,
+            dry_run=body.dry_run,
+        )
+
+        try:
+            result = create_opening_balance_draft(request, None)
+            status = result.get("status")
+
+            row = {
+                "account_code": account_code,
+                "account_name": item.get("account_name"),
+                "side": side,
+                "amount": amount,
+                "reference": reference,
+                "status": status,
+                "draft": result.get("draft"),
+            }
+
+            if status == "dry_run":
+                dry_runs.append(row)
+            elif status == "draft_created":
+                created.append(row)
+            elif status == "already_exists":
+                skipped.append({**row, "reason": "already_exists"})
+            else:
+                skipped.append({**row, "reason": status or "unknown"})
+        except HTTPException as exc:
+            errors.append({
+                "account_code": account_code,
+                "reference": reference,
+                "status_code": exc.status_code,
+                "detail": exc.detail,
+            })
+        except Exception as exc:
+            errors.append({
+                "account_code": account_code,
+                "reference": reference,
+                "detail": str(exc),
+            })
+
+    return {
+        "ok": len(errors) == 0,
+        "status": "dry_run" if body.dry_run else "completed",
+        "suggestion_count": len(suggestions),
+        "created_count": len(created),
+        "dry_run_count": len(dry_runs),
+        "skipped_count": len(skipped),
+        "error_count": len(errors),
+        "created": created,
+        "dry_runs": dry_runs,
+        "skipped": skipped,
+        "errors": errors,
+        "note": "Batch creates draft journals only. Posting still requires Post All Simulated and Materialize Ledger + Sync DB.",
     }
 

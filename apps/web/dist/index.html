@@ -454,6 +454,11 @@
           </div>
           <div class="muted">Balancing account: <strong>3000 Owner Capital</strong>. Suggested rows below are based on negative account diagnostics.</div>
           <div style="height:12px"></div>
+          <div class="action-row">
+            <button data-protected-action="true" class="button orange" onclick="previewOpeningDraftsFromSuggestions()">Dry Run Batch Suggestions</button>
+            <button data-protected-action="true" class="button primary" onclick="createOpeningDraftsFromSuggestions()">Create Drafts From Suggestions</button>
+          </div>
+          <div style="height:12px"></div>
           <div id="opening-suggestions-table"></div>
         </div>
       </section>
@@ -1489,6 +1494,54 @@ function fillOpeningSuggestion(accountCode, side, amount){
   if(amountEl) amountEl.value = amount;
   if(memoEl) memoEl.value = `Opening balance for ${accountCode}`;
 }
+
+async function runOpeningSuggestionBatch(dryRun){
+  if(!canRunProtectedActions()){
+    showActionLog("Login as owner/accountant or use fallback key to create opening balance drafts.", true);
+    return;
+  }
+
+  const suggestions = state.openingBalanceSuggestions || [];
+  if(!suggestions.length){
+    showActionLog("No opening balance suggestions available.", true);
+    return;
+  }
+
+  const referencePrefix = "OB-BATCH-" + new Date().toISOString().slice(0,10).replaceAll("-","");
+
+  try{
+    const res = await fetch("/api/v1/opening-balances/drafts/from-suggestions", {
+      method: "POST",
+      headers: {"Content-Type": "application/json", ...authHeaders()},
+      body: JSON.stringify({
+        balancing_account_code: "3000",
+        tenant_id: "opening-balance",
+        reference_prefix: referencePrefix,
+        dry_run: Boolean(dryRun)
+      }),
+    });
+    const data = await res.json();
+
+    if(!res.ok){
+      showActionLog("Batch opening balance failed: " + JSON.stringify(data, null, 2), true);
+      return;
+    }
+
+    showActionLog((dryRun ? "Dry run completed." : "Opening balance drafts created.") + "\\n" + JSON.stringify(data, null, 2), false);
+    await reloadAll();
+  }catch(err){
+    showActionLog("Batch opening balance failed: " + err.message, true);
+  }
+}
+async function previewOpeningDraftsFromSuggestions(){
+  await runOpeningSuggestionBatch(true);
+}
+async function createOpeningDraftsFromSuggestions(){
+  const ok = window.confirm("Create opening balance draft journals from all current suggestions? This will not post them yet.");
+  if(!ok) return;
+  await runOpeningSuggestionBatch(false);
+}
+
 async function createOpeningBalanceDraft(){
   if(!canRunProtectedActions()){
     showActionLog("Login as owner/accountant or use fallback key to create opening balance draft.", true);
