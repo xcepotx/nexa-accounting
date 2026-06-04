@@ -215,14 +215,14 @@
         <a href="#events" data-route="events"><span class="icon">↔</span> Event Inbox</a>
         <a href="#previews" data-route="previews"><span class="icon">◇</span> Journal Preview</a>
         <a href="#drafts" data-route="drafts"><span class="icon">✎</span> Draft Journals</a>
-        <a href="#ledger" data-route="ledger"><span class="icon">▦</span> Simulated Ledger</a>
+        <a href="#ledger" data-route="ledger"><span class="icon">▦</span> Ledger DB</a>
         <a href="#reports" data-route="reports"><span class="icon">▤</span> Reports</a>
         <a href="#settings" data-route="settings"><span class="icon">⚙</span> Settings</a>
       </nav>
 
       <div class="sidebar-foot">
         <strong>Status:</strong> integrated with NexaPOS event bridge.<br/>
-        <span class="muted">Simulated ledger only. Permanent DB ledger is not enabled yet.</span>
+        <span class="muted">SQLite ledger DB only. Permanent DB ledger is not enabled yet.</span>
       </div>
     </aside>
 
@@ -248,7 +248,7 @@
           <button class="button dark" onclick="reloadAll()">Refresh Console</button>
           <button class="button primary" onclick="runProtectedAction('Generate Drafts', '/api/v1/journal-drafts/generate-from-previews', {})">Generate Drafts</button>
           <button class="button orange" onclick="runProtectedAction('Post All Simulated', '/api/v1/journal-drafts/post-all-simulated', {posted_by:'console', note:'B22 console post all simulated'})">Post All Simulated</button>
-          <button class="button green" onclick="runProtectedAction('Materialize Ledger', '/api/v1/simulated-ledger/materialize-posted-drafts', {})">Materialize Ledger</button>
+          <button class="button green" onclick="runProtectedActionSequence('Materialize Ledger + Sync DB', [{label:'Materialize simulated ledger', url:'/api/v1/simulated-ledger/materialize-posted-drafts', body:{}}, {label:'Sync SQLite ledger DB', url:'/api/v1/ledger-db/backfill-from-simulated', body:{}}])">Materialize Ledger + Sync DB</button>
         </div>
         <div class="action-summary-grid" id="action-summary"></div>
         <div class="action-guidance" id="action-guidance">
@@ -340,7 +340,7 @@
         <div style="height:16px"></div>
         <div class="card">
           <div class="section-title">
-            <div><h2>Simulated Ledger Entries</h2><p>Materialized simulated entries and lines from posted simulated drafts.</p></div>
+            <div><h2>Ledger DB Entries</h2><p>Materialized ledger entries and lines from SQLite ledger DB.</p></div>
           </div>
           <div id="ledger-table"></div>
         </div>
@@ -352,7 +352,7 @@
         <div class="split">
           <div class="card">
             <div class="section-title">
-              <div><h2>Trial Balance</h2><p>Ending debit/credit per account from simulated ledger.</p></div>
+              <div><h2>Trial Balance</h2><p>Ending debit/credit per account from SQLite ledger DB.</p></div>
             </div>
             <div id="trial-balance-table"></div>
           </div>
@@ -406,8 +406,8 @@ const routeMeta = {
   events: ["Event Inbox", "POS Event Inbox", "Track event status from received to simulated ledger."],
   previews: ["Journal Preview", "Journal Preview Workspace", "Review generated debit/credit previews per POS event."],
   drafts: ["Draft Journals", "Draft Journal Queue", "Review persistent draft journals and simulated posting status."],
-  ledger: ["Simulated Ledger", "Simulated Ledger Store", "Inspect materialized simulated journal entries."],
-  reports: ["Reports", "Accounting Reports", "Trial balance and ledger health checks."],
+  ledger: ["Ledger DB", "Ledger DB Store", "Inspect materialized journal entries from SQLite ledger DB."],
+  reports: ["Reports", "Accounting Reports", "Trial balance and SQLite ledger health checks."],
   settings: ["Settings", "Chart of Accounts & Mapping", "Manage account master data and POS event mapping."],
 };
 
@@ -471,6 +471,51 @@ function showActionLog(message, isError=false){
   el.style.borderColor = isError ? "#fecdd3" : "#334155";
   el.textContent = typeof message === "string" ? message : JSON.stringify(message, null, 2);
 }
+
+async function runProtectedActionSequence(label, steps){
+  const key = getOperatorKey() || (document.getElementById("operator-key-input")?.value || "").trim();
+  if(!key){
+    showActionLog(label + " blocked: operator key is required for protected action endpoints.", true);
+    return;
+  }
+
+  localStorage.setItem("nexaAccountingOperatorKey", key);
+  updateOperatorKeyStatus();
+
+  const results = [];
+  showActionLog("Running " + label + "...", false);
+
+  try{
+    for(const step of steps){
+      showActionLog("Running " + label + "\n→ " + step.label + "...", false);
+      const res = await fetch(step.url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Internal-API-Key": key
+        },
+        body: JSON.stringify(step.body || {})
+      });
+
+      const text = await res.text();
+      let data;
+      try{ data = JSON.parse(text); }catch(_){ data = {raw:text}; }
+
+      results.push({step: step.label, http_status: res.status, ok: res.ok, response: data});
+
+      if(!res.ok){
+        showActionLog(label + " stopped at " + step.label + " with HTTP " + res.status + "\n" + JSON.stringify(results, null, 2), true);
+        return;
+      }
+    }
+
+    showActionLog(label + " completed.\n" + JSON.stringify(results, null, 2), false);
+    await reloadAll();
+  }catch(err){
+    showActionLog(label + " failed: " + err.message + "\n" + JSON.stringify(results, null, 2), true);
+  }
+}
+
 async function runProtectedAction(label, url, body){
   const key = getOperatorKey() || (document.getElementById("operator-key-input")?.value || "").trim();
   if(!key){
@@ -549,9 +594,9 @@ async function reloadAll(){
       fetchJson("/api/v1/events/status?limit=300"),
       fetchJson("/api/v1/journal-preview/queue?limit=300"),
       fetchJson("/api/v1/journal-drafts/public"),
-      fetchJson("/api/v1/simulated-ledger/entries"),
-      fetchJson("/api/v1/simulated-ledger/summary"),
-      fetchJson("/api/v1/reports/trial-balance-simulated"),
+      fetchJson("/api/v1/ledger-db/entries"),
+      fetchJson("/api/v1/ledger-db/summary"),
+      fetchJson("/api/v1/reports/trial-balance-db"),
       fetchJson("/api/v1/settings/chart-of-accounts"),
       fetchJson("/api/v1/settings/account-mappings"),
     ]);
@@ -777,7 +822,7 @@ function renderDrafts(){
 function renderLedger(){
   const summary = state.ledgerSummary?.summary || {};
   document.getElementById("ledger-metrics").innerHTML = [
-    metric("Entries", summary.entry_count || state.ledgerEntries.length, "Simulated ledger entries"),
+    metric("Entries", summary.entry_count || state.ledgerEntries.length, "SQLite ledger entries"),
     metric("Lines", summary.line_count || "-", "Journal lines"),
     metric("Debit", money(summary.total_debit), "Total movement debit"),
     metric("Credit", money(summary.total_credit), "Total movement credit"),
