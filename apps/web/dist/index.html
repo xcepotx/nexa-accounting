@@ -417,6 +417,16 @@
           <div style="height:12px"></div>
           <div id="balance-diagnostics-table"></div>
         </div>
+
+        <div style="height:16px"></div>
+        <div class="card">
+          <div class="section-title">
+            <div><h2>Negative Accounts Review</h2><p>Abnormal account balances grouped by event type and latest ledger lines.</p></div>
+          </div>
+          <div id="negative-accounts-summary"></div>
+          <div style="height:12px"></div>
+          <div id="negative-accounts-table"></div>
+        </div>
       </section>
 
       <section id="route-settings" class="route">
@@ -471,6 +481,7 @@ const state = {
   profitLoss: null,
   balanceSheet: null,
   balanceDiagnostics: null,
+  negativeAccounts: null,
   chartAccounts: [],
   accountMappings: [],
   users: [],
@@ -882,7 +893,7 @@ function setSelectOptions(id, values){
 async function reloadAll(){
   document.querySelector("#api-status span:last-child").textContent = "Loading...";
   try{
-    const [health, eventsStatus, previews, drafts, ledgerEntries, ledgerSummary, trialBalance, profitLoss, balanceSheet, balanceDiagnostics, chartAccounts, accountMappings] = await Promise.all([
+    const [health, eventsStatus, previews, drafts, ledgerEntries, ledgerSummary, trialBalance, profitLoss, balanceSheet, balanceDiagnostics, negativeAccounts, chartAccounts, accountMappings] = await Promise.all([
       fetchJson("/api/health"),
       fetchJson("/api/v1/events/status?limit=300"),
       fetchJson("/api/v1/journal-preview/queue?limit=300"),
@@ -893,6 +904,7 @@ async function reloadAll(){
       fetchJson("/api/v1/reports/profit-loss-db"),
       fetchJson("/api/v1/reports/balance-sheet-db"),
       fetchJson("/api/v1/reports/balance-sheet-diagnostics-db"),
+      fetchJson("/api/v1/reports/negative-accounts-db"),
       fetchJson("/api/v1/settings/chart-of-accounts"),
       fetchJson("/api/v1/settings/account-mappings"),
     ]);
@@ -907,6 +919,7 @@ async function reloadAll(){
     state.profitLoss = profitLoss;
     state.balanceSheet = balanceSheet;
     state.balanceDiagnostics = balanceDiagnostics;
+    state.negativeAccounts = negativeAccounts;
     state.chartAccounts = chartAccounts.items || [];
     state.accountMappings = accountMappings.items || [];
 
@@ -1332,6 +1345,69 @@ function renderBalanceDiagnosticsTable(){
   ], tableRows);
 }
 
+
+function renderNegativeAccountsReview(){
+  const report = state.negativeAccounts || {};
+  const summary = report.summary || {};
+  const items = report.items || [];
+
+  const summaryEl = document.getElementById("negative-accounts-summary");
+  if(summaryEl){
+    summaryEl.innerHTML = `
+      <div class="grid cards" style="grid-template-columns:repeat(auto-fit,minmax(180px,1fr))">
+        ${metric("Review Items", summary.review_item_count || 0, "Negative or unknown accounts")}
+        ${metric("Unknown", summary.unknown_account_count || 0, "Unclassified accounts")}
+        ${metric("Negative Assets", summary.negative_asset_count || 0, "Asset credit balances")}
+        ${metric("Negative Liabilities", summary.negative_liability_count || 0, "Liability debit balances")}
+      </div>
+    `;
+  }
+
+  const rows = [];
+
+  items.forEach(item => {
+    rows.push(`
+      <tr>
+        <td>${item.severity === "high" ? badge("high","bad") : item.severity === "medium" ? badge("medium","warn") : badge(item.severity || "ok","blue")}</td>
+        <td class="mono">${escapeHtml(item.account_code)}</td>
+        <td>${escapeHtml(item.account_name)}</td>
+        <td>${badge(item.account_type || "unknown", item.account_type === "unknown" ? "bad" : "blue")}</td>
+        <td class="right">${money(item.debit)}</td>
+        <td class="right">${money(item.credit)}</td>
+        <td class="right">${money(item.amount)}</td>
+        <td>${escapeHtml(item.issue || "")}<br/><span class="muted">${escapeHtml(item.suggested_review || "")}</span></td>
+      </tr>
+    `);
+
+    const eventRows = (item.by_event_type || []).map(ev =>
+      `${escapeHtml(ev.event_type || "-")}: Dr ${money(ev.debit)} / Cr ${money(ev.credit)} / Amt ${money(ev.amount)}`
+    ).join("<br/>");
+
+    const latestRows = (item.latest_lines || []).slice(0, 6).map(line =>
+      `${escapeHtml(line.event_type || "-")} · ${escapeHtml(line.source_number || line.event_id || "-")} · Dr ${money(line.debit)} / Cr ${money(line.credit)} · ${escapeHtml(line.memo || "")}`
+    ).join("<br/>");
+
+    rows.push(`
+      <tr>
+        <td></td>
+        <td colspan="3"><strong>By event type</strong><br/><span class="muted">${eventRows || "-"}</span></td>
+        <td colspan="4"><strong>Latest lines</strong><br/><span class="muted">${latestRows || "-"}</span></td>
+      </tr>
+    `);
+  });
+
+  document.getElementById("negative-accounts-table").innerHTML = table([
+    {label:"Severity"},
+    {label:"Code"},
+    {label:"Account"},
+    {label:"Type"},
+    {label:"Debit",right:true},
+    {label:"Credit",right:true},
+    {label:"Amount",right:true},
+    {label:"Issue"}
+  ], rows);
+}
+
 function renderReports(){
   const tb = state.trialBalance?.summary || {};
   const pl = state.profitLoss?.summary || {};
@@ -1375,6 +1451,7 @@ function renderReports(){
   renderProfitLossTable();
   renderBalanceSheetTable();
   renderBalanceDiagnosticsTable();
+  renderNegativeAccountsReview();
 }
 
 ["event-search","event-type-filter","event-status-filter","preview-search","preview-type-filter","draft-search","draft-status-filter"].forEach(id=>{

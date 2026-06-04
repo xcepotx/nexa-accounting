@@ -3025,3 +3025,225 @@ def balance_sheet_diagnostics_db_report() -> Dict[str, Any]:
         "note": "Diagnostics only. No automatic balancing adjustment is posted by this endpoint.",
     }
 
+@app.get("/api/v1/reports/negative-accounts-db")
+def negative_accounts_db_report() -> Dict[str, Any]:
+    _ledger_db_init()
+
+    accounts = {str(a.get("code")): a for a in _chart_of_accounts()}
+
+    with _ledger_db_connect() as conn:
+        grouped = [
+            _db_row_to_dict(row)
+            for row in conn.execute("""
+                SELECT
+                  account_code,
+                  account_name,
+                  COUNT(*) AS line_count,
+                  COALESCE(SUM(debit), 0) AS debit,
+                  COALESCE(SUM(credit), 0) AS credit
+                FROM ledger_lines
+                GROUP BY account_code, account_name
+                ORDER BY account_code
+            """).fetchall()
+        ]
+
+        event_rows = [
+            _db_row_to_dict(row)
+            for row in conn.execute("""
+                SELECT
+                  l.account_code,
+                  l.account_name,
+                  l.event_type,
+                  COUNT(*) AS line_count,
+                  COALESCE(SUM(l.debit), 0) AS debit,
+                  COALESCE(SUM(l.credit), 0) AS credit
+                FROM ledger_lines l
+                GROUP BY l.account_code, l.account_name, l.event_type
+                ORDER BY l.account_code, l.event_type
+            """).fetchall()
+        ]
+
+        detail_rows = [
+            _db_row_to_dict(row)
+            for row in conn.execute("""
+                SELECT
+                  l.id,
+                  l.entry_id,
+                  l.entry_key,
+                  l.line_no,
+                  l.account_code,
+                  l.account_name,
+                  l.debit,
+                  l.credit,
+                  l.memo,
+                  l.event_type,
+                  l.event_id,
+                  l.draft_id,
+                  l.created_at,
+                  e.source_number,
+                  e.summary,
+                  e.amount AS entry_amount
+                FROM ledger_lines l
+                LEFT JOIN ledger_entries e ON e.id = l.entry_id
+                ORDER BY l.account_code, COALESCE(l.created_at, l.id) DESC
+            """).fetchall()
+        ]
+
+    event_map: Dict[str, list[Dict[str, Any]]] = {}
+    detail_map: Dict[str, list[Dict[str, Any]]] = {}
+
+    for row in event_rows:
+        account_code = str(row.get("account_code") or "")
+        account = accounts.get(account_code) or {}
+        account_type = account.get("type") or "unknown"
+        debit = _money(row.get("debit"))
+        credit = _money(row.get("credit"))
+
+        if account_type == "asset":
+            amount = _money(debit - credit)
+        elif account_type in {"liability", "equity", "revenue"}:
+            amount = _money(credit - debit)
+        elif account_type in {"contra_revenue", "expense"}:
+            amount = _money(debit - credit)
+        else:
+            amount = _money(debit - credit)
+
+        event_map.setdefault(account_code, []).append({
+            "event_type": row.get("event_type"),
+            "line_count": int(row.get("line_count") or 0),
+            "debit": debit,
+            "credit": credit,
+            "amount": amount,
+        })
+
+    for row in detail_rows:
+        account_code = str(row.get("account_code") or "")
+        detail_map.setdefault(account_code, []).append({
+            "id": row.get("id"),
+            "entry_id": row.get("entry_id"),
+            "entry_key": row.get("entry_key"),
+            "line_no": row.get("line_no"),
+            "debit": _money(row.get("debit")),
+            "credit": _money(row.get("credit")),
+            "memo": row.get("memo"),
+            "event_type": row.get("event_type"),
+            "event_id": row.get("event_id"),
+            "source_number": row.get("source_number"),
+            "summary": row.get("summary"),
+            "entry_amount": _money(row.get("entry_amount")),
+            "created_at": row.get("created_at"),
+        })
+
+    negative_accounts = []
+    warning_accounts = []
+    all_accounts = []
+
+    for row in grouped:
+        account_code = str(row.get("account_code") or "")
+        account = accounts.get(account_code) or {}
+        account_type = account.get("type") or "unknown"
+        account_name = account.get("name") or row.get("account_name") or account_code
+        debit = _money(row.get("debit"))
+        credit = _money(row.get("credit"))
+
+        if account_type == "asset":
+            normal_balance = "debit"
+            amount = _money(debit - credit)
+        elif account_type in {"liability", "equity", "revenue"}:
+            normal_balance = "credit"
+            amount = _money(credit - debit)
+        elif account_type in {"contra_revenue", "expense"}:
+            normal_balance = "debit"
+            amount = _money(debit - credit)
+        else:
+            normal_balance = "unknown"
+            amount = _money(debit - credit)
+
+        is_negative = amount < 0
+        is_unknown = account_type == "unknown"
+
+        issue = None
+        severity = "ok"
+        suggested_review = "No review needed."
+
+        if is_unknown:
+            severity = "high"
+            issue = "Account is not classified in Chart of Accounts."
+            suggested_review = "Add this account to COA with the correct type."
+        elif is_negative and account_type == "asset":
+            severity = "medium"
+            issue = "Asset has credit balance."
+            suggested_review = "Review sales COGS, stock adjustment, settlement clearing, or opening asset balance."
+        elif is_negative and account_type == "liability":
+            severity = "medium"
+            issue = "Liability has debit balance."
+            suggested_review = "Review supplier payment vs PO/AP received; may need opening payable or correction."
+        elif is_negative and account_type == "equity":
+            severity = "medium"
+            issue = "Equity has debit balance."
+            suggested_review = "Review owner capital/opening equity entries."
+        elif is_negative and account_type in {"revenue", "expense", "contra_revenue"}:
+            severity = "low"
+            issue = "P&L account has opposite balance."
+            suggested_review = "Review reversal/void/discount/correction entries."
+
+        item = {
+            "account_code": account_code,
+            "account_name": account_name,
+            "account_type": account_type,
+            "normal_balance": normal_balance,
+            "line_count": int(row.get("line_count") or 0),
+            "debit": debit,
+            "credit": credit,
+            "amount": amount,
+            "is_negative": is_negative,
+            "is_unknown": is_unknown,
+            "severity": severity,
+            "issue": issue,
+            "suggested_review": suggested_review,
+            "by_event_type": event_map.get(account_code, []),
+            "latest_lines": detail_map.get(account_code, [])[:25],
+        }
+
+        all_accounts.append(item)
+
+        if is_unknown or is_negative:
+            negative_accounts.append(item)
+        elif account_type in {"asset", "liability", "equity"} and abs(amount) == 0:
+            warning_accounts.append(item)
+
+    negative_assets = [x for x in negative_accounts if x.get("account_type") == "asset"]
+    negative_liabilities = [x for x in negative_accounts if x.get("account_type") == "liability"]
+    negative_equity = [x for x in negative_accounts if x.get("account_type") == "equity"]
+    unknown_accounts = [x for x in negative_accounts if x.get("is_unknown")]
+
+    return {
+        "ok": True,
+        "report": "negative_accounts_db",
+        "basis": "sqlite_ledger_db",
+        "summary": {
+            "negative_account_count": len([x for x in negative_accounts if x.get("is_negative")]),
+            "unknown_account_count": len(unknown_accounts),
+            "negative_asset_count": len(negative_assets),
+            "negative_liability_count": len(negative_liabilities),
+            "negative_equity_count": len(negative_equity),
+            "review_item_count": len(negative_accounts),
+            "account_count": len(all_accounts),
+        },
+        "items": negative_accounts,
+        "sections": {
+            "unknown_accounts": unknown_accounts,
+            "negative_assets": negative_assets,
+            "negative_liabilities": negative_liabilities,
+            "negative_equity": negative_equity,
+            "all_accounts": all_accounts,
+        },
+        "recommended_next_steps": [
+            "Classify unknown accounts first.",
+            "Review negative liabilities against supplier payments and AP/PO receive events.",
+            "Review negative inventory/assets against stock receive, COGS, stock adjustment, and opening balances.",
+            "Only create opening balance or correction journals after account-level causes are clear.",
+        ],
+        "note": "Review report only. No automatic correction or opening balance is posted.",
+    }
+
