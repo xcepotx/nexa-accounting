@@ -1002,11 +1002,13 @@ def _materialize_simulated_ledger_from_draft(draft: Dict[str, Any], posted_by: s
     entry_key = _ledger_entry_key(draft)
     existing = _existing_simulated_ledger_entry(entry_key)
     if existing:
+        db_sync_result = _sync_simulated_ledger_entry_to_db(existing)
         return {
             "ok": True,
             "status": "already_materialized",
             "entry": existing,
             "summary": _public_simulated_ledger_entry_summary(existing),
+            "db_sync_result": db_sync_result,
         }
 
     now = now_iso()
@@ -1066,11 +1068,14 @@ def _materialize_simulated_ledger_from_draft(draft: Dict[str, Any], posted_by: s
         }
         _append_jsonl(SIM_LEDGER_LINE_STORE_PATH, ledger_line)
 
+    db_sync_result = _sync_simulated_ledger_entry_to_db(entry)
+
     return {
         "ok": True,
         "status": "materialized",
         "entry": entry,
         "summary": _public_simulated_ledger_entry_summary(entry),
+        "db_sync_result": db_sync_result,
     }
 
 
@@ -1132,6 +1137,8 @@ def materialize_posted_drafts_to_simulated_ledger(_: None = Depends(require_inte
         "created": created,
         "skipped": skipped[:100],
         "counts": _simulated_ledger_counts(),
+        "db_counts": _ledger_db_counts(),
+        "db_note": "B25C: materialized entries are synced into SQLite ledger DB idempotently.",
     }
 
 @app.post("/api/v1/journal-drafts/post-all-simulated")
@@ -2217,4 +2224,80 @@ def trial_balance_db_report() -> Dict[str, Any]:
         "rows": rows,
         "note": "Trial balance generated from SQLite ledger DB.",
     }
+
+# ---------- B25C_DIRECT_SQLITE_LEDGER_WRITE ----------
+def _sync_simulated_ledger_entry_to_db(entry: Dict[str, Any]) -> Dict[str, Any]:
+    if not entry:
+        return {"ok": False, "reason": "empty_entry"}
+
+    if "LEDGER_DB_PATH" not in globals():
+        return {"ok": False, "reason": "ledger_db_not_available"}
+
+    _ledger_db_init()
+
+    entry_key = entry.get("entry_key")
+    entry_id = entry.get("id")
+
+    all_lines = _read_jsonl_chronological(SIM_LEDGER_LINE_STORE_PATH, limit=300000)
+    lines = [
+        line for line in all_lines
+        if (entry_key and line.get("entry_key") == entry_key)
+        or (entry_id and line.get("entry_id") == entry_id)
+    ]
+
+    created_entry = 0
+    created_lines = 0
+    skipped_entry = 0
+    skipped_lines = 0
+
+    with _ledger_db_connect() as conn:
+        if _insert_ledger_entry_db(conn, entry):
+            created_entry = 1
+        else:
+            skipped_entry = 1
+
+        for line in lines:
+            if _insert_ledger_line_db(conn, line):
+                created_lines += 1
+            else:
+                skipped_lines += 1
+
+        conn.execute(
+            "INSERT OR REPLACE INTO ledger_meta(key, value, updated_at) VALUES (?, ?, ?)",
+            (
+                "last_direct_sync_from_materialize",
+                json.dumps({
+                    "entry_key": entry_key,
+                    "entry_id": entry_id,
+                    "created_entry": created_entry,
+                    "created_lines": created_lines,
+                    "skipped_entry": skipped_entry,
+                    "skipped_lines": skipped_lines,
+                }, ensure_ascii=False),
+                now_iso(),
+            ),
+        )
+        conn.commit()
+
+    return {
+        "ok": True,
+        "basis": "sqlite_ledger_db",
+        "entry_key": entry_key,
+        "entry_id": entry_id,
+        "created_entry": created_entry,
+        "created_lines": created_lines,
+        "skipped_entry": skipped_entry,
+        "skipped_lines": skipped_lines,
+        "counts": _ledger_db_counts(),
+    }
+
+
+def _sync_all_simulated_ledger_to_db() -> Dict[str, Any]:
+    return _backfill_ledger_db_from_simulated_jsonl()
+
+@app.post("/api/v1/ledger-db/sync-from-simulated")
+def sync_ledger_db_from_simulated(_: None = Depends(require_internal_key)) -> Dict[str, Any]:
+    result = _sync_all_simulated_ledger_to_db()
+    result["note"] = "Idempotent sync from simulated JSONL compatibility store into SQLite ledger DB."
+    return result
 
