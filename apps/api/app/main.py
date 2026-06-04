@@ -1811,6 +1811,7 @@ ACCOUNT_MAPPING_STORE_PATH = Path(os.getenv("ACCOUNT_MAPPING_STORE_PATH", "/data
 DEFAULT_CHART_OF_ACCOUNTS = [
     {"code": "1000", "name": "Cash / Payment Clearing", "type": "asset", "normal_balance": "debit", "active": True, "description": "Cash drawer, payment clearing, or temporary cash account."},
     {"code": "1010", "name": "Bank", "type": "asset", "normal_balance": "debit", "active": True, "description": "Bank account for settlement deposits."},
+    {"code": "1100", "name": "QRIS Clearing", "type": "asset", "normal_balance": "debit", "active": True, "description": "QRIS/payment provider clearing account before settlement to bank."},
     {"code": "1200", "name": "Inventory", "type": "asset", "normal_balance": "debit", "active": True, "description": "Inventory value."},
     {"code": "2000", "name": "Accounts Payable", "type": "liability", "normal_balance": "credit", "active": True, "description": "Supplier payable balance."},
     {"code": "4000", "name": "Sales Revenue", "type": "revenue", "normal_balance": "credit", "active": True, "description": "Product sales revenue."},
