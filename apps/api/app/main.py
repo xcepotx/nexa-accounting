@@ -74,6 +74,17 @@ class UserPatchRequest(BaseModel):
     role: Optional[str] = None
     is_active: Optional[bool] = None
 
+
+class OpeningBalanceDraftRequest(BaseModel):
+    account_code: str = Field(..., min_length=1)
+    side: str = "debit"
+    amount: float = Field(..., gt=0)
+    memo: Optional[str] = None
+    balancing_account_code: str = "3000"
+    tenant_id: str = "opening-balance"
+    reference: Optional[str] = None
+    dry_run: bool = False
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -1814,6 +1825,7 @@ DEFAULT_CHART_OF_ACCOUNTS = [
     {"code": "1100", "name": "QRIS Clearing", "type": "asset", "normal_balance": "debit", "active": True, "description": "QRIS/payment provider clearing account before settlement to bank."},
     {"code": "1200", "name": "Inventory", "type": "asset", "normal_balance": "debit", "active": True, "description": "Inventory value."},
     {"code": "2000", "name": "Accounts Payable", "type": "liability", "normal_balance": "credit", "active": True, "description": "Supplier payable balance."},
+    {"code": "3000", "name": "Owner Capital", "type": "equity", "normal_balance": "credit", "active": True, "description": "Owner capital, opening equity, and balancing account for opening balances."},
     {"code": "4000", "name": "Sales Revenue", "type": "revenue", "normal_balance": "credit", "active": True, "description": "Product sales revenue."},
     {"code": "4100", "name": "Sales Discount", "type": "contra_revenue", "normal_balance": "debit", "active": True, "description": "Sales discount and voucher discount."},
     {"code": "5000", "name": "Cost of Goods Sold", "type": "expense", "normal_balance": "debit", "active": True, "description": "COGS from POS sales."},
@@ -3245,5 +3257,199 @@ def negative_accounts_db_report() -> Dict[str, Any]:
             "Only create opening balance or correction journals after account-level causes are clear.",
         ],
         "note": "Review report only. No automatic correction or opening balance is posted.",
+    }
+
+# ---------- B29B_OPENING_BALANCE_FOUNDATION ----------
+def _account_by_code(account_code: str) -> Optional[Dict[str, Any]]:
+    for account in _chart_of_accounts():
+        if str(account.get("code")) == str(account_code):
+            return account
+    return None
+
+
+def _ensure_owner_capital_account() -> Dict[str, Any]:
+    account = _account_by_code("3000")
+    if account:
+        return account
+
+    rows = _chart_of_accounts()
+    now = now_iso()
+    owner_capital = {
+        "code": "3000",
+        "name": "Owner Capital",
+        "type": "equity",
+        "normal_balance": "credit",
+        "active": True,
+        "description": "Owner capital, opening equity, and balancing account for opening balances.",
+        "created_at": now,
+        "updated_at": now,
+    }
+    rows.append(owner_capital)
+    _write_json_file(CHART_OF_ACCOUNTS_STORE_PATH, sorted(rows, key=lambda x: str(x.get("code") or "")))
+    return owner_capital
+
+
+@app.get("/api/v1/opening-balances/suggestions")
+def opening_balance_suggestions() -> Dict[str, Any]:
+    _ensure_owner_capital_account()
+
+    negative = negative_accounts_db_report()
+    items = []
+
+    for item in negative.get("items", []):
+        account_type = item.get("account_type")
+        amount = _money(item.get("amount"))
+
+        if amount >= 0:
+            continue
+
+        abs_amount = abs(amount)
+        side = None
+        balancing_side = None
+        reason = None
+
+        if account_type == "asset":
+            side = "debit"
+            balancing_side = "credit"
+            reason = "Asset has credit balance; opening debit can restore the asset balance."
+        elif account_type == "liability":
+            side = "credit"
+            balancing_side = "debit"
+            reason = "Liability has debit balance; opening credit can restore payable/liability balance."
+        elif account_type == "equity":
+            side = "credit"
+            balancing_side = "debit"
+            reason = "Equity has debit balance; opening credit can restore equity balance."
+        else:
+            continue
+
+        items.append({
+            "account_code": item.get("account_code"),
+            "account_name": item.get("account_name"),
+            "account_type": account_type,
+            "current_amount": amount,
+            "suggested_side": side,
+            "suggested_amount": _money(abs_amount),
+            "balancing_account_code": "3000",
+            "balancing_account_name": "Owner Capital",
+            "balancing_side": balancing_side,
+            "reason": reason,
+            "source_issue": item.get("issue"),
+        })
+
+    return {
+        "ok": True,
+        "basis": "negative_accounts_db",
+        "count": len(items),
+        "items": items,
+        "note": "Suggestions only. Nothing is posted automatically.",
+    }
+
+
+@app.post("/api/v1/opening-balances/drafts")
+def create_opening_balance_draft(body: OpeningBalanceDraftRequest, _: None = Depends(require_internal_key)) -> Dict[str, Any]:
+    _ensure_owner_capital_account()
+
+    account_code = str(body.account_code).strip()
+    balancing_account_code = str(body.balancing_account_code or "3000").strip()
+    side = str(body.side or "debit").strip().lower()
+    amount = _money(body.amount)
+
+    if side not in {"debit", "credit"}:
+        raise HTTPException(status_code=400, detail="side must be debit or credit")
+
+    if account_code == balancing_account_code:
+        raise HTTPException(status_code=400, detail="account_code and balancing_account_code must be different")
+
+    account = _account_by_code(account_code)
+    balancing_account = _account_by_code(balancing_account_code)
+
+    if not account:
+        raise HTTPException(status_code=404, detail=f"Account not found: {account_code}")
+    if not balancing_account:
+        raise HTTPException(status_code=404, detail=f"Balancing account not found: {balancing_account_code}")
+
+    now = now_iso()
+    reference = body.reference or f"OB-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{secrets.token_hex(4).upper()}"
+    event_id = f"opening_balance:{reference}"
+
+    debit_1 = amount if side == "debit" else 0.0
+    credit_1 = amount if side == "credit" else 0.0
+    debit_2 = amount if side == "credit" else 0.0
+    credit_2 = amount if side == "debit" else 0.0
+
+    memo = body.memo or f"Opening balance {reference}"
+
+    lines = [
+        {
+            "account_code": account.get("code"),
+            "account_name": account.get("name"),
+            "debit": _money(debit_1),
+            "credit": _money(credit_1),
+            "memo": memo,
+            "mapping_key": "manual.opening_balance.primary",
+            "mapping_role": "opening_balance_primary",
+            "mapping_source": "manual",
+        },
+        {
+            "account_code": balancing_account.get("code"),
+            "account_name": balancing_account.get("name"),
+            "debit": _money(debit_2),
+            "credit": _money(credit_2),
+            "memo": f"Balancing entry for {reference}",
+            "mapping_key": "manual.opening_balance.balancing",
+            "mapping_role": "opening_balance_balancing",
+            "mapping_source": "manual",
+        },
+    ]
+
+    total_debit = _money(sum(line.get("debit") or 0 for line in lines))
+    total_credit = _money(sum(line.get("credit") or 0 for line in lines))
+    balanced = total_debit == total_credit
+
+    draft_key = f"manual:opening_balance:{reference}"
+    draft = {
+        "id": f"jd_{hashlib.sha1(draft_key.encode('utf-8')).hexdigest()[:16]}",
+        "draft_key": draft_key,
+        "status": "draft",
+        "source": "nexa_accounting",
+        "event_type": "opening_balance",
+        "event_id": event_id,
+        "tenant_id": body.tenant_id or "opening-balance",
+        "source_number": reference,
+        "summary": f"Opening balance draft {reference}",
+        "amount": amount,
+        "balanced": balanced,
+        "line_count": len(lines),
+        "lines": lines,
+        "created_at": now,
+        "updated_at": now,
+        "posting_note": None,
+    }
+
+    if not balanced:
+        raise HTTPException(status_code=400, detail="Opening balance draft is not balanced")
+
+    existing = [
+        d for d in _read_journal_drafts(limit=50000)
+        if d.get("draft_key") == draft_key
+    ]
+    if existing and not body.dry_run:
+        return {
+            "ok": True,
+            "status": "already_exists",
+            "draft": _public_journal_draft_summary(existing[0]),
+            "full_draft": existing[0],
+        }
+
+    if not body.dry_run:
+        _append_journal_draft(draft)
+
+    return {
+        "ok": True,
+        "status": "dry_run" if body.dry_run else "draft_created",
+        "draft": _public_journal_draft_summary(draft),
+        "full_draft": draft,
+        "note": "Post this draft using the existing Post All Simulated action, then Materialize Ledger + Sync DB.",
     }
 

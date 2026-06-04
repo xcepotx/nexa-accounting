@@ -218,6 +218,15 @@
     @media(max-width:1100px){.user-form-grid{grid-template-columns:1fr 1fr}}
     @media(max-width:640px){.user-form-grid{grid-template-columns:1fr}}
 
+  
+    .opening-form-grid{display:grid;grid-template-columns:1.1fr .8fr .8fr 1.2fr auto;gap:10px;margin-bottom:12px}
+    .opening-form-grid input,.opening-form-grid select{
+      height:38px;border:1px solid var(--line);border-radius:13px;
+      padding:0 12px;background:#fff;color:var(--ink);font-weight:700;outline:none;min-width:0;
+    }
+    @media(max-width:1100px){.opening-form-grid{grid-template-columns:1fr 1fr}}
+    @media(max-width:640px){.opening-form-grid{grid-template-columns:1fr}}
+
   </style>
 </head>
 <body>
@@ -427,6 +436,26 @@
           <div style="height:12px"></div>
           <div id="negative-accounts-table"></div>
         </div>
+
+        <div style="height:16px"></div>
+        <div class="card" id="opening-balance-tools">
+          <div class="section-title">
+            <div><h2>Opening Balance Tools</h2><p>Create balanced opening balance drafts. Nothing is posted until you run Post All Simulated and Materialize Ledger + Sync DB.</p></div>
+          </div>
+          <div class="opening-form-grid">
+            <select id="opening-account-code"></select>
+            <select id="opening-side">
+              <option value="debit">Debit</option>
+              <option value="credit">Credit</option>
+            </select>
+            <input id="opening-amount" type="number" min="0" step="0.01" placeholder="amount" />
+            <input id="opening-memo" placeholder="memo" />
+            <button data-protected-action="true" class="button primary" onclick="createOpeningBalanceDraft()">Create Draft</button>
+          </div>
+          <div class="muted">Balancing account: <strong>3000 Owner Capital</strong>. Suggested rows below are based on negative account diagnostics.</div>
+          <div style="height:12px"></div>
+          <div id="opening-suggestions-table"></div>
+        </div>
       </section>
 
       <section id="route-settings" class="route">
@@ -482,6 +511,7 @@ const state = {
   balanceSheet: null,
   balanceDiagnostics: null,
   negativeAccounts: null,
+  openingBalanceSuggestions: [],
   chartAccounts: [],
   accountMappings: [],
   users: [],
@@ -893,7 +923,7 @@ function setSelectOptions(id, values){
 async function reloadAll(){
   document.querySelector("#api-status span:last-child").textContent = "Loading...";
   try{
-    const [health, eventsStatus, previews, drafts, ledgerEntries, ledgerSummary, trialBalance, profitLoss, balanceSheet, balanceDiagnostics, negativeAccounts, chartAccounts, accountMappings] = await Promise.all([
+    const [health, eventsStatus, previews, drafts, ledgerEntries, ledgerSummary, trialBalance, profitLoss, balanceSheet, balanceDiagnostics, negativeAccounts, openingSuggestions, chartAccounts, accountMappings] = await Promise.all([
       fetchJson("/api/health"),
       fetchJson("/api/v1/events/status?limit=300"),
       fetchJson("/api/v1/journal-preview/queue?limit=300"),
@@ -905,6 +935,7 @@ async function reloadAll(){
       fetchJson("/api/v1/reports/balance-sheet-db"),
       fetchJson("/api/v1/reports/balance-sheet-diagnostics-db"),
       fetchJson("/api/v1/reports/negative-accounts-db"),
+      fetchJson("/api/v1/opening-balances/suggestions"),
       fetchJson("/api/v1/settings/chart-of-accounts"),
       fetchJson("/api/v1/settings/account-mappings"),
     ]);
@@ -920,6 +951,7 @@ async function reloadAll(){
     state.balanceSheet = balanceSheet;
     state.balanceDiagnostics = balanceDiagnostics;
     state.negativeAccounts = negativeAccounts;
+    state.openingBalanceSuggestions = openingSuggestions.items || [];
     state.chartAccounts = chartAccounts.items || [];
     state.accountMappings = accountMappings.items || [];
 
@@ -1408,6 +1440,95 @@ function renderNegativeAccountsReview(){
   ], rows);
 }
 
+
+function renderOpeningBalanceTools(){
+  const accountSelect = document.getElementById("opening-account-code");
+  if(accountSelect){
+    const current = accountSelect.value;
+    const accounts = (state.chartAccounts || []).filter(a => a.active !== false);
+    accountSelect.innerHTML = accounts.map(a => `<option value="${escapeHtml(a.code)}">${escapeHtml(a.code)} · ${escapeHtml(a.name)} · ${escapeHtml(a.type)}</option>`).join("");
+    if(current && accounts.some(a => String(a.code) === String(current))) accountSelect.value = current;
+  }
+
+  const suggestions = state.openingBalanceSuggestions || [];
+  const rows = suggestions.map(item => `
+    <tr>
+      <td class="mono">${escapeHtml(item.account_code)}</td>
+      <td>${escapeHtml(item.account_name)}</td>
+      <td>${badge(item.account_type || "-", "blue")}</td>
+      <td class="right">${money(item.current_amount)}</td>
+      <td>${escapeHtml(item.suggested_side)}</td>
+      <td class="right">${money(item.suggested_amount)}</td>
+      <td>${escapeHtml(item.reason || "")}</td>
+      <td><button class="button" onclick="fillOpeningSuggestion('${escapeHtml(item.account_code)}','${escapeHtml(item.suggested_side)}','${escapeHtml(item.suggested_amount)}')">Use</button></td>
+    </tr>
+  `);
+
+  const tableEl = document.getElementById("opening-suggestions-table");
+  if(tableEl){
+    tableEl.innerHTML = table([
+      {label:"Code"},
+      {label:"Account"},
+      {label:"Type"},
+      {label:"Current",right:true},
+      {label:"Side"},
+      {label:"Amount",right:true},
+      {label:"Reason"},
+      {label:"Action"}
+    ], rows);
+  }
+}
+function fillOpeningSuggestion(accountCode, side, amount){
+  const acc = document.getElementById("opening-account-code");
+  const sideEl = document.getElementById("opening-side");
+  const amountEl = document.getElementById("opening-amount");
+  const memoEl = document.getElementById("opening-memo");
+
+  if(acc) acc.value = accountCode;
+  if(sideEl) sideEl.value = side;
+  if(amountEl) amountEl.value = amount;
+  if(memoEl) memoEl.value = `Opening balance for ${accountCode}`;
+}
+async function createOpeningBalanceDraft(){
+  if(!canRunProtectedActions()){
+    showActionLog("Login as owner/accountant or use fallback key to create opening balance draft.", true);
+    return;
+  }
+
+  const payload = {
+    account_code: document.getElementById("opening-account-code")?.value || "",
+    side: document.getElementById("opening-side")?.value || "debit",
+    amount: Number(document.getElementById("opening-amount")?.value || 0),
+    memo: document.getElementById("opening-memo")?.value || "",
+    balancing_account_code: "3000",
+    tenant_id: "opening-balance",
+  };
+
+  if(!payload.account_code || !payload.amount || payload.amount <= 0){
+    showActionLog("Opening balance requires account and amount greater than zero.", true);
+    return;
+  }
+
+  try{
+    const res = await fetch("/api/v1/opening-balances/drafts", {
+      method: "POST",
+      headers: {"Content-Type": "application/json", ...authHeaders()},
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+
+    if(!res.ok){
+      showActionLog("Create opening balance draft failed: " + JSON.stringify(data, null, 2), true);
+      return;
+    }
+
+    showActionLog("Opening balance draft created. Next: Post All Simulated, then Materialize Ledger + Sync DB.\\n" + JSON.stringify(data.draft, null, 2), false);
+    await reloadAll();
+  }catch(err){
+    showActionLog("Create opening balance draft failed: " + err.message, true);
+  }
+}
+
 function renderReports(){
   const tb = state.trialBalance?.summary || {};
   const pl = state.profitLoss?.summary || {};
@@ -1452,6 +1573,7 @@ function renderReports(){
   renderBalanceSheetTable();
   renderBalanceDiagnosticsTable();
   renderNegativeAccountsReview();
+  renderOpeningBalanceTools();
 }
 
 ["event-search","event-type-filter","event-status-filter","preview-search","preview-type-filter","draft-search","draft-status-filter"].forEach(id=>{
