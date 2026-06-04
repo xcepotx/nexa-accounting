@@ -209,6 +209,15 @@
     .settings-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px;max-width:100%}
     @media(max-width:1200px){.settings-grid{grid-template-columns:1fr}}
 
+  
+    .user-form-grid{display:grid;grid-template-columns:1.2fr 1.2fr 1fr .9fr auto;gap:10px;margin-bottom:12px}
+    .user-form-grid input,.user-form-grid select{
+      height:38px;border:1px solid var(--line);border-radius:13px;
+      padding:0 12px;background:#fff;color:var(--ink);font-weight:700;outline:none;min-width:0;
+    }
+    @media(max-width:1100px){.user-form-grid{grid-template-columns:1fr 1fr}}
+    @media(max-width:640px){.user-form-grid{grid-template-columns:1fr}}
+
   </style>
 </head>
 <body>
@@ -402,6 +411,23 @@
             </div>
             <div id="mapping-table"></div>
           </div>
+        <div style="height:16px"></div>
+        <div class="card">
+          <div class="section-title">
+            <div><h2>User Management</h2><p>Owner-only user administration for Nexa Accounting Console.</p></div>
+          </div>
+          <div class="user-form-grid" id="user-create-form">
+            <input id="new-user-email" placeholder="email" autocomplete="off" />
+            <input id="new-user-name" placeholder="name" autocomplete="off" />
+            <select id="new-user-role">
+              <option value="viewer">viewer</option>
+              <option value="accountant">accountant</option>
+              <option value="owner">owner</option>
+            </select>
+            <input id="new-user-password" type="password" placeholder="password" autocomplete="new-password" />
+            <button data-protected-action="true" class="button primary" onclick="createConsoleUser()">Create</button>
+          </div>
+          <div id="users-table"></div>
         </div>
       </section>
     </main>
@@ -418,6 +444,7 @@ const state = {
   trialBalance: null,
   chartAccounts: [],
   accountMappings: [],
+  users: [],
 };
 
 const routeMeta = {
@@ -530,6 +557,130 @@ function logoutOperator(){
   clearAuth();
   showActionLog("Logged out.", false);
 }
+
+async function loadUsers(){
+  const user = getAuthUser();
+  if(!user || user.role !== "owner"){
+    state.users = [];
+    renderUsers();
+    return;
+  }
+
+  try{
+    const res = await fetch("/api/v1/users", {headers: authHeaders()});
+    const data = await res.json();
+    if(res.ok){
+      state.users = data.items || [];
+    }else{
+      state.users = [];
+      showActionLog("Could not load users: " + JSON.stringify(data, null, 2), true);
+    }
+  }catch(err){
+    state.users = [];
+    showActionLog("Could not load users: " + err.message, true);
+  }
+  renderUsers();
+}
+function renderUsers(){
+  const el = document.getElementById("users-table");
+  if(!el) return;
+
+  const user = getAuthUser();
+  if(!user){
+    el.innerHTML = `<div class="empty">Login as owner to manage users.</div>`;
+    return;
+  }
+
+  if(user.role !== "owner"){
+    el.innerHTML = `<div class="empty">User Management is owner-only. Current role: ${escapeHtml(user.role)}</div>`;
+    return;
+  }
+
+  const rows = (state.users || []).map(u => `
+    <tr>
+      <td>${u.is_active ? badge("active","ok") : badge("disabled","warn")}</td>
+      <td>${escapeHtml(u.email)}</td>
+      <td>${escapeHtml(u.name || "-")}</td>
+      <td>${badge(u.role || "-", u.role === "owner" ? "blue" : "")}</td>
+      <td>
+        <button class="button ${u.is_active ? "red" : "green"}" onclick="toggleConsoleUser('${escapeHtml(u.id)}', ${u.is_active ? "false" : "true"})">
+          ${u.is_active ? "Disable" : "Enable"}
+        </button>
+      </td>
+    </tr>
+  `);
+
+  el.innerHTML = table([
+    {label:"Status"},{label:"Email"},{label:"Name"},{label:"Role"},{label:"Action"}
+  ], rows);
+}
+async function createConsoleUser(){
+  const current = getAuthUser();
+  if(!current || current.role !== "owner"){
+    showActionLog("Only owner can create users.", true);
+    return;
+  }
+
+  const payload = {
+    email: (document.getElementById("new-user-email")?.value || "").trim(),
+    name: (document.getElementById("new-user-name")?.value || "").trim(),
+    role: document.getElementById("new-user-role")?.value || "viewer",
+    password: (document.getElementById("new-user-password")?.value || "").trim(),
+    is_active: true,
+  };
+
+  if(!payload.email || !payload.password){
+    showActionLog("Email and password are required.", true);
+    return;
+  }
+
+  try{
+    const res = await fetch("/api/v1/users", {
+      method: "POST",
+      headers: {"Content-Type": "application/json", ...authHeaders()},
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+
+    if(!res.ok){
+      showActionLog("Create user failed: " + JSON.stringify(data, null, 2), true);
+      return;
+    }
+
+    document.getElementById("new-user-password").value = "";
+    showActionLog("User created: " + data.user.email + " (" + data.user.role + ")", false);
+    await loadUsers();
+  }catch(err){
+    showActionLog("Create user failed: " + err.message, true);
+  }
+}
+async function toggleConsoleUser(userId, isActive){
+  const current = getAuthUser();
+  if(!current || current.role !== "owner"){
+    showActionLog("Only owner can update users.", true);
+    return;
+  }
+
+  try{
+    const res = await fetch("/api/v1/users/" + encodeURIComponent(userId), {
+      method: "PATCH",
+      headers: {"Content-Type": "application/json", ...authHeaders()},
+      body: JSON.stringify({is_active: Boolean(isActive)}),
+    });
+    const data = await res.json();
+
+    if(!res.ok){
+      showActionLog("Update user failed: " + JSON.stringify(data, null, 2), true);
+      return;
+    }
+
+    showActionLog("User updated: " + data.user.email + " is " + (data.user.is_active ? "active" : "disabled"), false);
+    await loadUsers();
+  }catch(err){
+    showActionLog("Update user failed: " + err.message, true);
+  }
+}
+
 async function loadMe(){
   const token = getAuthToken();
   if(!token){
@@ -732,6 +883,7 @@ async function reloadAll(){
     hydrateFilters();
     renderCurrentRoute();
     renderActionSummary();
+    loadUsers();
   }catch(err){
     console.error(err);
     document.querySelector("#api-status").style.background = "#fff1f2";

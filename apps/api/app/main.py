@@ -58,6 +58,22 @@ class LoginRequest(BaseModel):
     email: str = Field(..., min_length=3)
     password: str = Field(..., min_length=1)
 
+
+class UserCreateRequest(BaseModel):
+    email: str = Field(..., min_length=3)
+    password: str = Field(..., min_length=6)
+    name: Optional[str] = None
+    role: str = "viewer"
+    is_active: bool = True
+
+
+class UserPatchRequest(BaseModel):
+    email: Optional[str] = None
+    password: Optional[str] = None
+    name: Optional[str] = None
+    role: Optional[str] = None
+    is_active: Optional[bool] = None
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -128,6 +144,25 @@ def _public_user(user: Dict[str, Any]) -> Dict[str, Any]:
         "role": user.get("role"),
         "is_active": bool(user.get("is_active", True)),
     }
+
+
+VALID_APP_USER_ROLES = {"owner", "accountant", "viewer"}
+
+
+def _validate_app_user_role(role: str) -> str:
+    role = (role or "viewer").strip().lower()
+    if role not in VALID_APP_USER_ROLES:
+        raise HTTPException(status_code=400, detail=f"Invalid role: {role}")
+    return role
+
+
+def _ensure_active_owner_remains(users: list[Dict[str, Any]]) -> None:
+    active_owners = [
+        user for user in users
+        if user.get("role") == "owner" and user.get("is_active", True)
+    ]
+    if not active_owners:
+        raise HTTPException(status_code=400, detail="At least one active owner is required")
 
 
 def _auth_sign(payload: str) -> str:
@@ -2493,4 +2528,99 @@ def sync_ledger_db_from_simulated(_: None = Depends(require_internal_key)) -> Di
     result = _sync_all_simulated_ledger_to_db()
     result["note"] = "Idempotent sync from simulated JSONL compatibility store into SQLite ledger DB."
     return result
+
+@app.get("/api/v1/users")
+def list_app_users(user: Dict[str, Any] = Depends(require_user_roles("owner"))) -> Dict[str, Any]:
+    users = _read_app_users()
+    public_users = sorted(
+        [_public_user(item) for item in users],
+        key=lambda x: (str(x.get("role") or ""), str(x.get("email") or "")),
+    )
+    return {
+        "ok": True,
+        "count": len(public_users),
+        "items": public_users,
+    }
+
+
+@app.post("/api/v1/users")
+def create_app_user(body: UserCreateRequest, user: Dict[str, Any] = Depends(require_user_roles("owner"))) -> Dict[str, Any]:
+    users = _read_app_users()
+    email = body.email.lower().strip()
+    role = _validate_app_user_role(body.role)
+
+    if any((item.get("email") or "").lower().strip() == email for item in users):
+        raise HTTPException(status_code=400, detail="Email already exists")
+
+    now = now_iso()
+    new_user = {
+        "id": f"usr_{secrets.token_hex(8)}",
+        "email": email,
+        "name": body.name or email.split("@")[0],
+        "role": role,
+        "is_active": bool(body.is_active),
+        "password_hash": _password_hash(body.password),
+        "created_at": now,
+        "updated_at": now,
+        "created_by": user.get("id"),
+    }
+
+    next_users = users + [new_user]
+    _ensure_active_owner_remains(next_users)
+    _write_app_users(next_users)
+
+    return {
+        "ok": True,
+        "user": _public_user(new_user),
+    }
+
+
+@app.patch("/api/v1/users/{user_id}")
+def update_app_user(user_id: str, body: UserPatchRequest, user: Dict[str, Any] = Depends(require_user_roles("owner"))) -> Dict[str, Any]:
+    users = _read_app_users()
+    now = now_iso()
+    found = None
+
+    for idx, item in enumerate(users):
+        if item.get("id") == user_id:
+            found = idx
+            break
+
+    if found is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    target = dict(users[found])
+
+    if body.email is not None:
+        email = body.email.lower().strip()
+        if any((item.get("email") or "").lower().strip() == email and item.get("id") != user_id for item in users):
+            raise HTTPException(status_code=400, detail="Email already exists")
+        target["email"] = email
+
+    if body.name is not None:
+        target["name"] = body.name
+
+    if body.role is not None:
+        target["role"] = _validate_app_user_role(body.role)
+
+    if body.is_active is not None:
+        target["is_active"] = bool(body.is_active)
+
+    if body.password:
+        if len(body.password) < 6:
+            raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+        target["password_hash"] = _password_hash(body.password)
+
+    target["updated_at"] = now
+    target["updated_by"] = user.get("id")
+
+    next_users = list(users)
+    next_users[found] = target
+    _ensure_active_owner_remains(next_users)
+    _write_app_users(next_users)
+
+    return {
+        "ok": True,
+        "user": _public_user(target),
+    }
 
