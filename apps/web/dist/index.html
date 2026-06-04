@@ -399,6 +399,14 @@
           </div>
           <div id="profit-loss-table"></div>
         </div>
+
+        <div style="height:16px"></div>
+        <div class="card">
+          <div class="section-title">
+            <div><h2>Balance Sheet</h2><p>Assets, liabilities, equity, and current period income bridge from SQLite ledger DB.</p></div>
+          </div>
+          <div id="balance-sheet-table"></div>
+        </div>
       </section>
 
       <section id="route-settings" class="route">
@@ -451,6 +459,7 @@ const state = {
   ledgerSummary: null,
   trialBalance: null,
   profitLoss: null,
+  balanceSheet: null,
   chartAccounts: [],
   accountMappings: [],
   users: [],
@@ -862,7 +871,7 @@ function setSelectOptions(id, values){
 async function reloadAll(){
   document.querySelector("#api-status span:last-child").textContent = "Loading...";
   try{
-    const [health, eventsStatus, previews, drafts, ledgerEntries, ledgerSummary, trialBalance, profitLoss, chartAccounts, accountMappings] = await Promise.all([
+    const [health, eventsStatus, previews, drafts, ledgerEntries, ledgerSummary, trialBalance, profitLoss, balanceSheet, chartAccounts, accountMappings] = await Promise.all([
       fetchJson("/api/health"),
       fetchJson("/api/v1/events/status?limit=300"),
       fetchJson("/api/v1/journal-preview/queue?limit=300"),
@@ -871,6 +880,7 @@ async function reloadAll(){
       fetchJson("/api/v1/ledger-db/summary"),
       fetchJson("/api/v1/reports/trial-balance-db"),
       fetchJson("/api/v1/reports/profit-loss-db"),
+      fetchJson("/api/v1/reports/balance-sheet-db"),
       fetchJson("/api/v1/settings/chart-of-accounts"),
       fetchJson("/api/v1/settings/account-mappings"),
     ]);
@@ -883,6 +893,7 @@ async function reloadAll(){
     state.ledgerSummary = ledgerSummary;
     state.trialBalance = trialBalance;
     state.profitLoss = profitLoss;
+    state.balanceSheet = balanceSheet;
     state.chartAccounts = chartAccounts.items || [];
     state.accountMappings = accountMappings.items || [];
 
@@ -1201,15 +1212,68 @@ function renderProfitLossTable(){
   ], sectionRows);
 }
 
+
+function renderBalanceSheetTable(){
+  const report = state.balanceSheet || {};
+  const sections = report.sections || {};
+  const summary = report.summary || {};
+  const rows = [];
+
+  function addHeader(label, amount){
+    rows.push(`
+      <tr>
+        <td colspan="4"><strong>${escapeHtml(label)}</strong></td>
+        <td class="right"><strong>${money(amount)}</strong></td>
+      </tr>
+    `);
+  }
+
+  function addRows(items){
+    (items || []).forEach(row => {
+      rows.push(`
+        <tr>
+          <td class="mono">${escapeHtml(row.account_code)}</td>
+          <td>${escapeHtml(row.account_name)}</td>
+          <td>${badge(row.account_type || "-", "blue")}</td>
+          <td class="right">${money(row.line_count)}</td>
+          <td class="right">${money(row.amount || 0)}</td>
+        </tr>
+      `);
+    });
+  }
+
+  addHeader("Assets", summary.assets || 0);
+  addRows(sections.assets || []);
+
+  addHeader("Liabilities", summary.liabilities || 0);
+  addRows(sections.liabilities || []);
+
+  addHeader("Equity", summary.equity || 0);
+  addRows(sections.equity || []);
+
+  addHeader("Current Period Net Income", summary.current_period_net_income || 0);
+  addRows(sections.current_period_income || []);
+
+  addHeader("Total Liabilities + Equity", summary.liabilities_and_equity || 0);
+
+  const balanceLabel = summary.balanced ? "Balanced" : "Difference";
+  addHeader(balanceLabel, summary.difference || 0);
+
+  document.getElementById("balance-sheet-table").innerHTML = table([
+    {label:"Code"},{label:"Account"},{label:"Type"},{label:"Lines",right:true},{label:"Amount",right:true}
+  ], rows);
+}
+
 function renderReports(){
   const tb = state.trialBalance?.summary || {};
   const pl = state.profitLoss?.summary || {};
+  const bs = state.balanceSheet?.summary || {};
   const sum = state.ledgerSummary?.summary || {};
   document.getElementById("report-metrics").innerHTML = [
     metric("Trial Balance", tb.balanced ? "Balanced" : "Unbalanced", "Ending diff: " + money(tb.ending_difference)),
-    metric("Net Revenue", money(pl.net_revenue), "Profit & Loss"),
-    metric("Expenses", money(pl.expenses), "Profit & Loss"),
     metric("Net Income", money(pl.net_income), "Profit & Loss"),
+    metric("Assets", money(bs.assets), "Balance Sheet"),
+    metric("BS Check", bs.balanced ? "Balanced" : money(bs.difference), "Assets vs liabilities + equity"),
   ].join("");
 
   const tbRows = (state.trialBalance?.rows || []).map(r=>`
@@ -1241,6 +1305,7 @@ function renderReports(){
   ], evRows);
 
   renderProfitLossTable();
+  renderBalanceSheetTable();
 }
 
 ["event-search","event-type-filter","event-status-filter","preview-search","preview-type-filter","draft-search","draft-status-filter"].forEach(id=>{

@@ -2721,3 +2721,117 @@ def profit_loss_db_report() -> Dict[str, Any]:
         "note": "Profit & Loss generated from SQLite ledger DB and account types in Chart of Accounts.",
     }
 
+@app.get("/api/v1/reports/balance-sheet-db")
+def balance_sheet_db_report() -> Dict[str, Any]:
+    _ledger_db_init()
+
+    accounts = {str(a.get("code")): a for a in _chart_of_accounts()}
+    pl = profit_loss_db_report()
+    current_period_net_income = _money((pl.get("summary") or {}).get("net_income"))
+
+    with _ledger_db_connect() as conn:
+        grouped = [
+            _db_row_to_dict(row)
+            for row in conn.execute("""
+                SELECT
+                  account_code,
+                  account_name,
+                  COUNT(*) AS line_count,
+                  COALESCE(SUM(debit), 0) AS debit,
+                  COALESCE(SUM(credit), 0) AS credit
+                FROM ledger_lines
+                GROUP BY account_code, account_name
+                ORDER BY account_code
+            """).fetchall()
+        ]
+
+    asset_rows = []
+    liability_rows = []
+    equity_rows = []
+    non_balance_sheet_rows = []
+
+    total_assets = 0.0
+    total_liabilities = 0.0
+    total_equity = 0.0
+
+    for row in grouped:
+        account_code = str(row.get("account_code") or "")
+        account = accounts.get(account_code) or {}
+        account_type = account.get("type") or "unknown"
+        account_name = account.get("name") or row.get("account_name") or account_code
+
+        debit = _money(row.get("debit"))
+        credit = _money(row.get("credit"))
+
+        item = {
+            "account_code": account_code,
+            "account_name": account_name,
+            "account_type": account_type,
+            "line_count": int(row.get("line_count") or 0),
+            "debit": debit,
+            "credit": credit,
+            "amount": 0.0,
+        }
+
+        if account_type == "asset":
+            amount = _money(debit - credit)
+            item["amount"] = amount
+            total_assets = _money(total_assets + amount)
+            asset_rows.append(item)
+        elif account_type == "liability":
+            amount = _money(credit - debit)
+            item["amount"] = amount
+            total_liabilities = _money(total_liabilities + amount)
+            liability_rows.append(item)
+        elif account_type == "equity":
+            amount = _money(credit - debit)
+            item["amount"] = amount
+            total_equity = _money(total_equity + amount)
+            equity_rows.append(item)
+        else:
+            # Revenue and expense accounts are represented through current period net income.
+            item["amount"] = _money(credit - debit)
+            non_balance_sheet_rows.append(item)
+
+    total_equity_with_income = _money(total_equity + current_period_net_income)
+    total_liabilities_and_equity = _money(total_liabilities + total_equity_with_income)
+    difference = _money(total_assets - total_liabilities_and_equity)
+
+    retained_income_row = {
+        "account_code": "NET-INCOME",
+        "account_name": "Current Period Net Income",
+        "account_type": "equity_bridge",
+        "line_count": 0,
+        "debit": 0.0,
+        "credit": 0.0,
+        "amount": current_period_net_income,
+    }
+
+    return {
+        "ok": True,
+        "report": "balance_sheet_db",
+        "basis": "sqlite_ledger_db",
+        "summary": {
+            "assets": total_assets,
+            "liabilities": total_liabilities,
+            "equity": total_equity,
+            "current_period_net_income": current_period_net_income,
+            "equity_with_current_income": total_equity_with_income,
+            "liabilities_and_equity": total_liabilities_and_equity,
+            "difference": difference,
+            "balanced": difference == 0,
+            "asset_account_count": len(asset_rows),
+            "liability_account_count": len(liability_rows),
+            "equity_account_count": len(equity_rows),
+            "non_balance_sheet_account_count": len(non_balance_sheet_rows),
+        },
+        "sections": {
+            "assets": asset_rows,
+            "liabilities": liability_rows,
+            "equity": equity_rows,
+            "current_period_income": [retained_income_row],
+            "non_balance_sheet_accounts": non_balance_sheet_rows,
+        },
+        "note": "Balance Sheet generated from SQLite ledger DB and Chart of Accounts. Revenue/expense accounts are bridged through current period net income.",
+    }
+
