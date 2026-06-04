@@ -391,6 +391,14 @@
             <div id="event-summary-table"></div>
           </div>
         </div>
+
+        <div style="height:16px"></div>
+        <div class="card">
+          <div class="section-title">
+            <div><h2>Profit & Loss</h2><p>Revenue, expense, and net income from SQLite ledger DB using Chart of Accounts types.</p></div>
+          </div>
+          <div id="profit-loss-table"></div>
+        </div>
       </section>
 
       <section id="route-settings" class="route">
@@ -442,6 +450,7 @@ const state = {
   ledgerEntries: [],
   ledgerSummary: null,
   trialBalance: null,
+  profitLoss: null,
   chartAccounts: [],
   accountMappings: [],
   users: [],
@@ -853,7 +862,7 @@ function setSelectOptions(id, values){
 async function reloadAll(){
   document.querySelector("#api-status span:last-child").textContent = "Loading...";
   try{
-    const [health, eventsStatus, previews, drafts, ledgerEntries, ledgerSummary, trialBalance, chartAccounts, accountMappings] = await Promise.all([
+    const [health, eventsStatus, previews, drafts, ledgerEntries, ledgerSummary, trialBalance, profitLoss, chartAccounts, accountMappings] = await Promise.all([
       fetchJson("/api/health"),
       fetchJson("/api/v1/events/status?limit=300"),
       fetchJson("/api/v1/journal-preview/queue?limit=300"),
@@ -861,6 +870,7 @@ async function reloadAll(){
       fetchJson("/api/v1/ledger-db/entries"),
       fetchJson("/api/v1/ledger-db/summary"),
       fetchJson("/api/v1/reports/trial-balance-db"),
+      fetchJson("/api/v1/reports/profit-loss-db"),
       fetchJson("/api/v1/settings/chart-of-accounts"),
       fetchJson("/api/v1/settings/account-mappings"),
     ]);
@@ -872,6 +882,7 @@ async function reloadAll(){
     state.ledgerEntries = ledgerEntries.items || [];
     state.ledgerSummary = ledgerSummary;
     state.trialBalance = trialBalance;
+    state.profitLoss = profitLoss;
     state.chartAccounts = chartAccounts.items || [];
     state.accountMappings = accountMappings.items || [];
 
@@ -1141,14 +1152,64 @@ function renderSettings(){
   ], mappingRows);
 }
 
+
+function renderProfitLossTable(){
+  const report = state.profitLoss || {};
+  const sections = report.sections || {};
+  const summary = report.summary || {};
+
+  const sectionRows = [];
+
+  function addHeader(label, amount){
+    sectionRows.push(`
+      <tr>
+        <td colspan="4"><strong>${escapeHtml(label)}</strong></td>
+        <td class="right"><strong>${money(amount)}</strong></td>
+      </tr>
+    `);
+  }
+
+  function addRows(rows, sign=1){
+    (rows || []).forEach(row => {
+      sectionRows.push(`
+        <tr>
+          <td class="mono">${escapeHtml(row.account_code)}</td>
+          <td>${escapeHtml(row.account_name)}</td>
+          <td>${badge(row.account_type || "-", "blue")}</td>
+          <td class="right">${money(row.line_count)}</td>
+          <td class="right">${money((row.amount || 0) * sign)}</td>
+        </tr>
+      `);
+    });
+  }
+
+  addHeader("Revenue", summary.revenue || 0);
+  addRows(sections.revenue || [], 1);
+
+  addHeader("Contra Revenue", -(summary.contra_revenue || 0));
+  addRows(sections.contra_revenue || [], -1);
+
+  addHeader("Net Revenue", summary.net_revenue || 0);
+
+  addHeader("Expenses", summary.expenses || 0);
+  addRows(sections.expenses || [], 1);
+
+  addHeader("Net Income", summary.net_income || 0);
+
+  document.getElementById("profit-loss-table").innerHTML = table([
+    {label:"Code"},{label:"Account"},{label:"Type"},{label:"Lines",right:true},{label:"Amount",right:true}
+  ], sectionRows);
+}
+
 function renderReports(){
   const tb = state.trialBalance?.summary || {};
+  const pl = state.profitLoss?.summary || {};
   const sum = state.ledgerSummary?.summary || {};
   document.getElementById("report-metrics").innerHTML = [
     metric("Trial Balance", tb.balanced ? "Balanced" : "Unbalanced", "Ending diff: " + money(tb.ending_difference)),
-    metric("Accounts", tb.account_count || 0, "Accounts in report"),
-    metric("Ending Debit", money(tb.ending_debit), "Trial balance"),
-    metric("Ending Credit", money(tb.ending_credit), "Trial balance"),
+    metric("Net Revenue", money(pl.net_revenue), "Profit & Loss"),
+    metric("Expenses", money(pl.expenses), "Profit & Loss"),
+    metric("Net Income", money(pl.net_income), "Profit & Loss"),
   ].join("");
 
   const tbRows = (state.trialBalance?.rows || []).map(r=>`
@@ -1178,6 +1239,8 @@ function renderReports(){
   document.getElementById("event-summary-table").innerHTML = table([
     {label:"Event Type"},{label:"Entries",right:true},{label:"Lines",right:true},{label:"Amount",right:true},{label:"Debit",right:true},{label:"Credit",right:true}
   ], evRows);
+
+  renderProfitLossTable();
 }
 
 ["event-search","event-type-filter","event-status-filter","preview-search","preview-type-filter","draft-search","draft-status-filter"].forEach(id=>{

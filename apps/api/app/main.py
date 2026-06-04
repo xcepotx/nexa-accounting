@@ -2624,3 +2624,100 @@ def update_app_user(user_id: str, body: UserPatchRequest, user: Dict[str, Any] =
         "user": _public_user(target),
     }
 
+@app.get("/api/v1/reports/profit-loss-db")
+def profit_loss_db_report() -> Dict[str, Any]:
+    _ledger_db_init()
+
+    accounts = {str(a.get("code")): a for a in _chart_of_accounts()}
+
+    with _ledger_db_connect() as conn:
+        grouped = [
+            _db_row_to_dict(row)
+            for row in conn.execute("""
+                SELECT
+                  account_code,
+                  account_name,
+                  COUNT(*) AS line_count,
+                  COALESCE(SUM(debit), 0) AS debit,
+                  COALESCE(SUM(credit), 0) AS credit
+                FROM ledger_lines
+                GROUP BY account_code, account_name
+                ORDER BY account_code
+            """).fetchall()
+        ]
+
+    revenue_rows = []
+    contra_revenue_rows = []
+    expense_rows = []
+    other_rows = []
+
+    total_revenue = 0.0
+    total_contra_revenue = 0.0
+    total_expense = 0.0
+
+    for row in grouped:
+        account_code = str(row.get("account_code") or "")
+        account = accounts.get(account_code) or {}
+        account_type = account.get("type") or "unknown"
+        account_name = account.get("name") or row.get("account_name") or account_code
+
+        debit = _money(row.get("debit"))
+        credit = _money(row.get("credit"))
+
+        item = {
+            "account_code": account_code,
+            "account_name": account_name,
+            "account_type": account_type,
+            "line_count": int(row.get("line_count") or 0),
+            "debit": debit,
+            "credit": credit,
+            "amount": 0.0,
+        }
+
+        if account_type == "revenue":
+            amount = _money(credit - debit)
+            item["amount"] = amount
+            total_revenue = _money(total_revenue + amount)
+            revenue_rows.append(item)
+        elif account_type == "contra_revenue":
+            amount = _money(debit - credit)
+            item["amount"] = amount
+            total_contra_revenue = _money(total_contra_revenue + amount)
+            contra_revenue_rows.append(item)
+        elif account_type == "expense":
+            amount = _money(debit - credit)
+            item["amount"] = amount
+            total_expense = _money(total_expense + amount)
+            expense_rows.append(item)
+        else:
+            # Asset/liability/equity accounts are not P&L rows, but expose them for audit context.
+            item["amount"] = _money(debit - credit)
+            other_rows.append(item)
+
+    net_revenue = _money(total_revenue - total_contra_revenue)
+    net_income = _money(net_revenue - total_expense)
+
+    return {
+        "ok": True,
+        "report": "profit_loss_db",
+        "basis": "sqlite_ledger_db",
+        "summary": {
+            "revenue": total_revenue,
+            "contra_revenue": total_contra_revenue,
+            "net_revenue": net_revenue,
+            "expenses": total_expense,
+            "net_income": net_income,
+            "revenue_account_count": len(revenue_rows),
+            "contra_revenue_account_count": len(contra_revenue_rows),
+            "expense_account_count": len(expense_rows),
+            "other_account_count": len(other_rows),
+        },
+        "sections": {
+            "revenue": revenue_rows,
+            "contra_revenue": contra_revenue_rows,
+            "expenses": expense_rows,
+            "other_non_pl_accounts": other_rows,
+        },
+        "note": "Profit & Loss generated from SQLite ledger DB and account types in Chart of Accounts.",
+    }
+
