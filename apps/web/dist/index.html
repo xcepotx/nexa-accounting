@@ -227,6 +227,18 @@
     @media(max-width:1100px){.opening-form-grid{grid-template-columns:1fr 1fr}}
     @media(max-width:640px){.opening-form-grid{grid-template-columns:1fr}}
 
+  
+    .txn-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+    .txn-form-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+    .txn-form-grid input,.txn-form-grid select,.txn-form-grid textarea{
+      border:1px solid var(--line);border-radius:13px;padding:10px 12px;background:#fff;
+      color:var(--ink);font-weight:700;outline:none;min-width:0;
+    }
+    .txn-form-grid textarea{grid-column:1/-1;min-height:72px;resize:vertical}
+    .txn-form-grid .full{grid-column:1/-1}
+    @media(max-width:1100px){.txn-grid{grid-template-columns:1fr}}
+    @media(max-width:640px){.txn-form-grid{grid-template-columns:1fr}.txn-form-grid textarea,.txn-form-grid .full{grid-column:auto}}
+
   </style>
 </head>
 <body>
@@ -244,6 +256,7 @@
         <a href="#dashboard" data-route="dashboard"><span class="icon">◼</span> Dashboard</a>
         <a href="#events" data-route="events"><span class="icon">↔</span> Event Inbox</a>
         <a href="#previews" data-route="previews"><span class="icon">◇</span> Journal Preview</a>
+        <a href="#transactions" data-route="transactions"><span class="icon">＋</span> Transactions</a>
         <a href="#drafts" data-route="drafts"><span class="icon">✎</span> Draft Journals</a>
         <a href="#ledger" data-route="ledger"><span class="icon">▦</span> Ledger DB</a>
         <a href="#reports" data-route="reports"><span class="icon">▤</span> Reports</a>
@@ -351,6 +364,79 @@
             <div><h2>Journal Preview Workspace</h2><p>Generated debit/credit preview from POS events. No permanent posting here.</p></div>
           </div>
           <div id="preview-list"></div>
+        </div>
+      </section>
+
+      <section id="route-transactions" class="route">
+        <div class="txn-grid">
+          <div class="card">
+            <div class="section-title">
+              <div><h2>Expense</h2><p>Create an expense draft journal.</p></div>
+            </div>
+            <div class="txn-form-grid">
+              <input id="txn-expense-amount" type="number" min="0" step="0.01" placeholder="amount" />
+              <select id="txn-expense-account"></select>
+              <select id="txn-expense-payment"></select>
+              <input id="txn-expense-ref" placeholder="reference optional" />
+              <textarea id="txn-expense-desc" placeholder="description"></textarea>
+              <button data-protected-action="true" class="button primary full" onclick="createExpenseTransaction()">Create Expense Draft</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="section-title">
+              <div><h2>Payment Settlement</h2><p>Create settlement clearing draft journal.</p></div>
+            </div>
+            <div class="txn-form-grid">
+              <input id="txn-settlement-gross" type="number" min="0" step="0.01" placeholder="gross amount" />
+              <input id="txn-settlement-fee" type="number" min="0" step="0.01" placeholder="fee amount" />
+              <select id="txn-settlement-bank"></select>
+              <select id="txn-settlement-clearing"></select>
+              <select id="txn-settlement-fee-account"></select>
+              <input id="txn-settlement-ref" placeholder="reference optional" />
+              <textarea id="txn-settlement-desc" placeholder="description"></textarea>
+              <button data-protected-action="true" class="button primary full" onclick="createSettlementTransaction()">Create Settlement Draft</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="section-title">
+              <div><h2>Supplier Payment</h2><p>Create AP payment draft journal.</p></div>
+            </div>
+            <div class="txn-form-grid">
+              <input id="txn-supplier-amount" type="number" min="0" step="0.01" placeholder="amount" />
+              <input id="txn-supplier-name" placeholder="supplier name" />
+              <select id="txn-supplier-ap"></select>
+              <select id="txn-supplier-payment"></select>
+              <input id="txn-supplier-ref" placeholder="reference optional" />
+              <textarea id="txn-supplier-desc" placeholder="description"></textarea>
+              <button data-protected-action="true" class="button primary full" onclick="createSupplierPaymentTransaction()">Create Supplier Payment Draft</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="section-title">
+              <div><h2>Manual Journal</h2><p>Create a balanced two-line manual journal draft.</p></div>
+            </div>
+            <div class="txn-form-grid">
+              <select id="txn-manual-account-dr"></select>
+              <input id="txn-manual-debit" type="number" min="0" step="0.01" placeholder="debit amount" />
+              <select id="txn-manual-account-cr"></select>
+              <input id="txn-manual-credit" type="number" min="0" step="0.01" placeholder="credit amount" />
+              <input id="txn-manual-ref" placeholder="reference optional" />
+              <textarea id="txn-manual-memo" placeholder="memo"></textarea>
+              <button data-protected-action="true" class="button primary full" onclick="createManualJournalDraft()">Create Manual Journal Draft</button>
+            </div>
+          </div>
+        </div>
+
+        <div style="height:16px"></div>
+        <div class="card">
+          <div class="section-title">
+            <div><h2>Recent Manual Transactions</h2><p>Drafts created from Nexa Accounting transaction forms.</p></div>
+            <button class="button" onclick="loadTransactions()">Refresh</button>
+          </div>
+          <div id="transactions-table"></div>
         </div>
       </section>
 
@@ -520,6 +606,7 @@ const state = {
   chartAccounts: [],
   accountMappings: [],
   users: [],
+  transactions: [],
 };
 
 const routeMeta = {
@@ -928,7 +1015,7 @@ function setSelectOptions(id, values){
 async function reloadAll(){
   document.querySelector("#api-status span:last-child").textContent = "Loading...";
   try{
-    const [health, eventsStatus, previews, drafts, ledgerEntries, ledgerSummary, trialBalance, profitLoss, balanceSheet, balanceDiagnostics, negativeAccounts, openingSuggestions, chartAccounts, accountMappings] = await Promise.all([
+    const [health, eventsStatus, previews, drafts, ledgerEntries, ledgerSummary, trialBalance, profitLoss, balanceSheet, balanceDiagnostics, negativeAccounts, openingSuggestions, chartAccounts, accountMappings, transactions] = await Promise.all([
       fetchJson("/api/health"),
       fetchJson("/api/v1/events/status?limit=300"),
       fetchJson("/api/v1/journal-preview/queue?limit=300"),
@@ -943,6 +1030,7 @@ async function reloadAll(){
       fetchJson("/api/v1/opening-balances/suggestions"),
       fetchJson("/api/v1/settings/chart-of-accounts"),
       fetchJson("/api/v1/settings/account-mappings"),
+      fetchJson("/api/v1/transactions/recent"),
     ]);
 
     state.health = health;
@@ -959,6 +1047,7 @@ async function reloadAll(){
     state.openingBalanceSuggestions = openingSuggestions.items || [];
     state.chartAccounts = chartAccounts.items || [];
     state.accountMappings = accountMappings.items || [];
+    state.transactions = transactions.items || [];
 
     document.querySelector("#api-status").style.background = "#ecfdf5";
     document.querySelector("#api-status").style.color = "#166534";
@@ -1002,6 +1091,7 @@ function renderCurrentRoute(){
   if(route === "dashboard") renderDashboard();
   if(route === "events") renderEvents();
   if(route === "previews") renderPreviews();
+  if(route === "transactions") renderTransactions();
   if(route === "drafts") renderDrafts();
   if(route === "ledger") renderLedger();
   if(route === "reports") renderReports();
@@ -1145,6 +1235,136 @@ function renderPreviews(){
       ${lineTable(item.lines || [])}
     </div>
   `).join("") + `</div>` : `<div class="empty">No previews found.</div>`;
+}
+
+
+function accountOptions(filterFn){
+  const accounts = (state.chartAccounts || []).filter(a => a.active !== false).filter(filterFn || (() => true));
+  return accounts.map(a => `<option value="${escapeHtml(a.code)}">${escapeHtml(a.code)} · ${escapeHtml(a.name)}</option>`).join("");
+}
+function hydrateTransactionForms(){
+  const all = accountOptions();
+  const expenses = accountOptions(a => ["expense","contra_revenue"].includes(a.type));
+  const assets = accountOptions(a => a.type === "asset");
+  const liabilities = accountOptions(a => a.type === "liability");
+
+  const set = (id, html, preferred) => {
+    const el = document.getElementById(id);
+    if(!el) return;
+    const current = el.value;
+    el.innerHTML = html || all;
+    if(current) el.value = current;
+    else if(preferred && [...el.options].some(o => o.value === preferred)) el.value = preferred;
+  };
+
+  set("txn-expense-account", expenses, "6000");
+  set("txn-expense-payment", assets, "1000");
+  set("txn-settlement-bank", assets, "1010");
+  set("txn-settlement-clearing", assets, "1100");
+  set("txn-settlement-fee-account", expenses, "6100");
+  set("txn-supplier-ap", liabilities, "2000");
+  set("txn-supplier-payment", assets, "1000");
+  set("txn-manual-account-dr", all, "1000");
+  set("txn-manual-account-cr", all, "3000");
+}
+async function createTransactionDraft(url, payload, label){
+  if(!canRunProtectedActions()){
+    showActionLog("Login as owner/accountant or use fallback key to create transaction drafts.", true);
+    return;
+  }
+
+  try{
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {"Content-Type": "application/json", ...authHeaders()},
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if(!res.ok){
+      showActionLog(label + " failed: " + JSON.stringify(data, null, 2), true);
+      return;
+    }
+    showActionLog(label + " created. Next: Post All Simulated, then Materialize Ledger + Sync DB.\\n" + JSON.stringify(data.draft, null, 2), false);
+    await reloadAll();
+  }catch(err){
+    showActionLog(label + " failed: " + err.message, true);
+  }
+}
+async function createExpenseTransaction(){
+  await createTransactionDraft("/api/v1/transactions/expenses", {
+    amount: Number(document.getElementById("txn-expense-amount")?.value || 0),
+    expense_account_code: document.getElementById("txn-expense-account")?.value || "6000",
+    payment_account_code: document.getElementById("txn-expense-payment")?.value || "1000",
+    description: document.getElementById("txn-expense-desc")?.value || "",
+    reference: document.getElementById("txn-expense-ref")?.value || null,
+  }, "Expense draft");
+}
+async function createSettlementTransaction(){
+  await createTransactionDraft("/api/v1/transactions/settlements", {
+    gross_amount: Number(document.getElementById("txn-settlement-gross")?.value || 0),
+    fee_amount: Number(document.getElementById("txn-settlement-fee")?.value || 0),
+    bank_account_code: document.getElementById("txn-settlement-bank")?.value || "1010",
+    fee_account_code: document.getElementById("txn-settlement-fee-account")?.value || "6100",
+    clearing_account_code: document.getElementById("txn-settlement-clearing")?.value || "1100",
+    description: document.getElementById("txn-settlement-desc")?.value || "",
+    reference: document.getElementById("txn-settlement-ref")?.value || null,
+  }, "Settlement draft");
+}
+async function createSupplierPaymentTransaction(){
+  await createTransactionDraft("/api/v1/transactions/supplier-payments", {
+    amount: Number(document.getElementById("txn-supplier-amount")?.value || 0),
+    supplier_name: document.getElementById("txn-supplier-name")?.value || "",
+    ap_account_code: document.getElementById("txn-supplier-ap")?.value || "2000",
+    payment_account_code: document.getElementById("txn-supplier-payment")?.value || "1000",
+    description: document.getElementById("txn-supplier-desc")?.value || "",
+    reference: document.getElementById("txn-supplier-ref")?.value || null,
+  }, "Supplier payment draft");
+}
+async function createManualJournalDraft(){
+  const debit = Number(document.getElementById("txn-manual-debit")?.value || 0);
+  const credit = Number(document.getElementById("txn-manual-credit")?.value || 0);
+  await createTransactionDraft("/api/v1/manual-journals/drafts", {
+    reference: document.getElementById("txn-manual-ref")?.value || null,
+    memo: document.getElementById("txn-manual-memo")?.value || "",
+    lines: [
+      {account_code: document.getElementById("txn-manual-account-dr")?.value || "1000", debit, credit: 0, memo: document.getElementById("txn-manual-memo")?.value || ""},
+      {account_code: document.getElementById("txn-manual-account-cr")?.value || "3000", debit: 0, credit, memo: document.getElementById("txn-manual-memo")?.value || ""},
+    ],
+  }, "Manual journal draft");
+}
+async function loadTransactions(){
+  try{
+    const data = await fetchJson("/api/v1/transactions/recent");
+    state.transactions = data.items || [];
+    renderTransactions();
+  }catch(err){
+    showActionLog("Could not load transactions: " + err.message, true);
+  }
+}
+function renderTransactions(){
+  hydrateTransactionForms();
+  const rows = (state.transactions || []).map(txn => `
+    <tr>
+      <td>${badge(txn.transaction_type || "-", "blue")}</td>
+      <td class="mono">${escapeHtml(txn.reference || "-")}</td>
+      <td>${escapeHtml(txn.summary || "-")}</td>
+      <td class="right">${money(txn.amount)}</td>
+      <td>${statusBadge(txn.status)}</td>
+      <td>${escapeHtml(shortTime(txn.created_at))}</td>
+    </tr>
+  `);
+
+  const el = document.getElementById("transactions-table");
+  if(el){
+    el.innerHTML = table([
+      {label:"Type"},
+      {label:"Reference"},
+      {label:"Summary"},
+      {label:"Amount",right:true},
+      {label:"Draft Status"},
+      {label:"Created"}
+    ], rows);
+  }
 }
 
 function renderDrafts(){

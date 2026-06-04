@@ -93,6 +93,50 @@ class OpeningBalanceBatchDraftRequest(BaseModel):
     reference_prefix: Optional[str] = None
     dry_run: bool = False
 
+
+class ExpenseTransactionRequest(BaseModel):
+    amount: float = Field(..., gt=0)
+    expense_account_code: str = "6000"
+    payment_account_code: str = "1000"
+    description: Optional[str] = None
+    reference: Optional[str] = None
+    tenant_id: str = "manual-transaction"
+
+
+class SettlementTransactionRequest(BaseModel):
+    gross_amount: float = Field(..., gt=0)
+    fee_amount: float = 0
+    bank_account_code: str = "1010"
+    fee_account_code: str = "6100"
+    clearing_account_code: str = "1100"
+    description: Optional[str] = None
+    reference: Optional[str] = None
+    tenant_id: str = "manual-transaction"
+
+
+class SupplierPaymentTransactionRequest(BaseModel):
+    amount: float = Field(..., gt=0)
+    ap_account_code: str = "2000"
+    payment_account_code: str = "1000"
+    supplier_name: Optional[str] = None
+    description: Optional[str] = None
+    reference: Optional[str] = None
+    tenant_id: str = "manual-transaction"
+
+
+class ManualJournalLineRequest(BaseModel):
+    account_code: str = Field(..., min_length=1)
+    debit: float = 0
+    credit: float = 0
+    memo: Optional[str] = None
+
+
+class ManualJournalDraftRequest(BaseModel):
+    reference: Optional[str] = None
+    memo: Optional[str] = None
+    tenant_id: str = "manual-journal"
+    lines: list[ManualJournalLineRequest] = Field(..., min_length=2)
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -3578,5 +3622,348 @@ def create_opening_balance_drafts_from_suggestions(body: OpeningBalanceBatchDraf
         "skipped": skipped,
         "errors": errors,
         "note": "Batch creates draft journals only. Posting still requires Post All Simulated and Materialize Ledger + Sync DB.",
+    }
+
+# ---------- B30_TRANSACTION_FORMS_PACK ----------
+TRANSACTION_HISTORY_STORE_PATH = Path(os.getenv("TRANSACTION_HISTORY_STORE_PATH", "/data/accounting/app/nexa-accounting/data/accounting_transactions.jsonl"))
+
+
+def _append_transaction_history(item: Dict[str, Any]) -> None:
+    TRANSACTION_HISTORY_STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with TRANSACTION_HISTORY_STORE_PATH.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(item, ensure_ascii=False, default=_json_default) + "\n")
+
+
+def _read_transaction_history(limit: int = 250) -> list[Dict[str, Any]]:
+    if not TRANSACTION_HISTORY_STORE_PATH.exists():
+        return []
+    rows = []
+    for line in TRANSACTION_HISTORY_STORE_PATH.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rows.append(json.loads(line))
+        except Exception:
+            continue
+    rows.reverse()
+    return rows[: max(1, min(limit, 1000))]
+
+
+def _account_or_404(account_code: str) -> Dict[str, Any]:
+    account = _account_by_code(str(account_code))
+    if not account:
+        raise HTTPException(status_code=404, detail=f"Account not found: {account_code}")
+    return account
+
+
+def _make_manual_draft(
+    *,
+    transaction_type: str,
+    reference: str,
+    tenant_id: str,
+    summary: str,
+    amount: float,
+    lines: list[Dict[str, Any]],
+    created_by: str = "console",
+    source: str = "nexa_accounting",
+) -> Dict[str, Any]:
+    now = now_iso()
+    total_debit = _money(sum(_money(line.get("debit")) for line in lines))
+    total_credit = _money(sum(_money(line.get("credit")) for line in lines))
+    balanced = total_debit == total_credit
+
+    if not balanced:
+        raise HTTPException(status_code=400, detail=f"Draft is not balanced: debit={total_debit}, credit={total_credit}")
+
+    draft_key = f"manual:{transaction_type}:{reference}"
+    draft = {
+        "id": f"jd_{hashlib.sha1(draft_key.encode('utf-8')).hexdigest()[:16]}",
+        "draft_key": draft_key,
+        "status": "draft",
+        "source": source,
+        "event_type": transaction_type,
+        "event_id": f"{transaction_type}:{reference}",
+        "tenant_id": tenant_id,
+        "source_number": reference,
+        "summary": summary,
+        "amount": _money(amount),
+        "balanced": balanced,
+        "line_count": len(lines),
+        "lines": lines,
+        "created_at": now,
+        "updated_at": now,
+        "created_by": created_by,
+        "posting_note": None,
+    }
+
+    existing = [
+        d for d in _read_journal_drafts(limit=50000)
+        if d.get("draft_key") == draft_key
+    ]
+
+    if existing:
+        return {
+            "status": "already_exists",
+            "draft": existing[0],
+            "created": False,
+        }
+
+    _append_journal_draft(draft)
+    return {
+        "status": "draft_created",
+        "draft": draft,
+        "created": True,
+    }
+
+
+def _history_from_draft(transaction_type: str, draft: Dict[str, Any], payload: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "id": f"txn_{hashlib.sha1((transaction_type + ':' + str(draft.get('draft_key'))).encode('utf-8')).hexdigest()[:16]}",
+        "transaction_type": transaction_type,
+        "reference": draft.get("source_number"),
+        "event_type": draft.get("event_type"),
+        "event_id": draft.get("event_id"),
+        "draft_id": draft.get("id"),
+        "draft_key": draft.get("draft_key"),
+        "status": draft.get("status"),
+        "summary": draft.get("summary"),
+        "amount": draft.get("amount"),
+        "tenant_id": draft.get("tenant_id"),
+        "created_at": now_iso(),
+        "payload_summary": payload,
+    }
+
+
+@app.get("/api/v1/transactions/recent")
+def list_recent_accounting_transactions(limit: int = 250) -> Dict[str, Any]:
+    rows = _read_transaction_history(limit=limit)
+    return {
+        "ok": True,
+        "count": len(rows),
+        "items": rows,
+        "note": "Manual transaction history for Nexa Accounting forms.",
+    }
+
+
+@app.post("/api/v1/transactions/expenses")
+def create_expense_transaction(body: ExpenseTransactionRequest, _: None = Depends(require_internal_key)) -> Dict[str, Any]:
+    amount = _money(body.amount)
+    expense_account = _account_or_404(body.expense_account_code)
+    payment_account = _account_or_404(body.payment_account_code)
+    reference = body.reference or f"EXP-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{secrets.token_hex(4).upper()}"
+    memo = body.description or f"Expense {reference}"
+
+    lines = [
+        {
+            **_journal_line(expense_account["code"], expense_account["name"], debit=amount, memo=memo),
+            "mapping_key": "manual.expense.expense_debit",
+            "mapping_role": "expense_debit",
+            "mapping_source": "manual",
+        },
+        {
+            **_journal_line(payment_account["code"], payment_account["name"], credit=amount, memo=f"Payment for {reference}"),
+            "mapping_key": "manual.expense.payment_credit",
+            "mapping_role": "payment_credit",
+            "mapping_source": "manual",
+        },
+    ]
+
+    result = _make_manual_draft(
+        transaction_type="manual_expense",
+        reference=reference,
+        tenant_id=body.tenant_id,
+        summary=memo,
+        amount=amount,
+        lines=lines,
+    )
+
+    draft = result["draft"]
+    history = _history_from_draft("expense", draft, {
+        "expense_account_code": expense_account["code"],
+        "payment_account_code": payment_account["code"],
+    })
+    if result["created"]:
+        _append_transaction_history(history)
+
+    return {
+        "ok": True,
+        "status": result["status"],
+        "draft": _public_journal_draft_summary(draft),
+        "full_draft": draft,
+        "transaction": history,
+        "note": "Draft created. Post via Post All Simulated, then Materialize Ledger + Sync DB.",
+    }
+
+
+@app.post("/api/v1/transactions/settlements")
+def create_settlement_transaction(body: SettlementTransactionRequest, _: None = Depends(require_internal_key)) -> Dict[str, Any]:
+    gross = _money(body.gross_amount)
+    fee = _money(body.fee_amount)
+    if fee < 0:
+        raise HTTPException(status_code=400, detail="fee_amount cannot be negative")
+    if fee > gross:
+        raise HTTPException(status_code=400, detail="fee_amount cannot exceed gross_amount")
+
+    net = _money(gross - fee)
+    bank_account = _account_or_404(body.bank_account_code)
+    fee_account = _account_or_404(body.fee_account_code)
+    clearing_account = _account_or_404(body.clearing_account_code)
+    reference = body.reference or f"SET-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{secrets.token_hex(4).upper()}"
+    memo = body.description or f"Payment settlement {reference}"
+
+    lines = [
+        {
+            **_journal_line(bank_account["code"], bank_account["name"], debit=net, memo=f"Settlement net {reference}"),
+            "mapping_key": "manual.settlement.bank_debit",
+            "mapping_role": "bank_debit",
+            "mapping_source": "manual",
+        },
+    ]
+    if fee:
+        lines.append({
+            **_journal_line(fee_account["code"], fee_account["name"], debit=fee, memo=f"Settlement fee {reference}"),
+            "mapping_key": "manual.settlement.fee_debit",
+            "mapping_role": "fee_debit",
+            "mapping_source": "manual",
+        })
+    lines.append({
+        **_journal_line(clearing_account["code"], clearing_account["name"], credit=gross, memo=f"Clear settlement {reference}"),
+        "mapping_key": "manual.settlement.clearing_credit",
+        "mapping_role": "clearing_credit",
+        "mapping_source": "manual",
+    })
+
+    result = _make_manual_draft(
+        transaction_type="manual_settlement",
+        reference=reference,
+        tenant_id=body.tenant_id,
+        summary=memo,
+        amount=gross,
+        lines=lines,
+    )
+
+    draft = result["draft"]
+    history = _history_from_draft("settlement", draft, {
+        "gross_amount": gross,
+        "fee_amount": fee,
+        "net_amount": net,
+        "bank_account_code": bank_account["code"],
+        "fee_account_code": fee_account["code"],
+        "clearing_account_code": clearing_account["code"],
+    })
+    if result["created"]:
+        _append_transaction_history(history)
+
+    return {
+        "ok": True,
+        "status": result["status"],
+        "draft": _public_journal_draft_summary(draft),
+        "full_draft": draft,
+        "transaction": history,
+        "note": "Draft created. Post via Post All Simulated, then Materialize Ledger + Sync DB.",
+    }
+
+
+@app.post("/api/v1/transactions/supplier-payments")
+def create_supplier_payment_transaction(body: SupplierPaymentTransactionRequest, _: None = Depends(require_internal_key)) -> Dict[str, Any]:
+    amount = _money(body.amount)
+    ap_account = _account_or_404(body.ap_account_code)
+    payment_account = _account_or_404(body.payment_account_code)
+    reference = body.reference or f"SP-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{secrets.token_hex(4).upper()}"
+    supplier_label = body.supplier_name or "Supplier"
+    memo = body.description or f"Supplier payment {reference} - {supplier_label}"
+
+    lines = [
+        {
+            **_journal_line(ap_account["code"], ap_account["name"], debit=amount, memo=memo),
+            "mapping_key": "manual.supplier_payment.ap_debit",
+            "mapping_role": "ap_debit",
+            "mapping_source": "manual",
+        },
+        {
+            **_journal_line(payment_account["code"], payment_account["name"], credit=amount, memo=f"Payment for {reference}"),
+            "mapping_key": "manual.supplier_payment.payment_credit",
+            "mapping_role": "payment_credit",
+            "mapping_source": "manual",
+        },
+    ]
+
+    result = _make_manual_draft(
+        transaction_type="manual_supplier_payment",
+        reference=reference,
+        tenant_id=body.tenant_id,
+        summary=memo,
+        amount=amount,
+        lines=lines,
+    )
+
+    draft = result["draft"]
+    history = _history_from_draft("supplier_payment", draft, {
+        "supplier_name": supplier_label,
+        "ap_account_code": ap_account["code"],
+        "payment_account_code": payment_account["code"],
+    })
+    if result["created"]:
+        _append_transaction_history(history)
+
+    return {
+        "ok": True,
+        "status": result["status"],
+        "draft": _public_journal_draft_summary(draft),
+        "full_draft": draft,
+        "transaction": history,
+        "note": "Draft created. Post via Post All Simulated, then Materialize Ledger + Sync DB.",
+    }
+
+
+@app.post("/api/v1/manual-journals/drafts")
+def create_manual_journal_draft(body: ManualJournalDraftRequest, _: None = Depends(require_internal_key)) -> Dict[str, Any]:
+    reference = body.reference or f"MJ-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{secrets.token_hex(4).upper()}"
+    memo = body.memo or f"Manual journal {reference}"
+    lines = []
+
+    for idx, line in enumerate(body.lines, start=1):
+        account = _account_or_404(line.account_code)
+        debit = _money(line.debit)
+        credit = _money(line.credit)
+
+        if debit < 0 or credit < 0:
+            raise HTTPException(status_code=400, detail="Debit/credit cannot be negative")
+        if debit and credit:
+            raise HTTPException(status_code=400, detail=f"Line {idx} cannot have both debit and credit")
+        if not debit and not credit:
+            raise HTTPException(status_code=400, detail=f"Line {idx} must have debit or credit")
+
+        lines.append({
+            **_journal_line(account["code"], account["name"], debit=debit, credit=credit, memo=line.memo or memo),
+            "mapping_key": "manual.journal.line",
+            "mapping_role": "manual_journal_line",
+            "mapping_source": "manual",
+        })
+
+    amount = _money(max(sum(line.get("debit") or 0 for line in lines), sum(line.get("credit") or 0 for line in lines)))
+
+    result = _make_manual_draft(
+        transaction_type="manual_journal",
+        reference=reference,
+        tenant_id=body.tenant_id,
+        summary=memo,
+        amount=amount,
+        lines=lines,
+    )
+
+    draft = result["draft"]
+    history = _history_from_draft("manual_journal", draft, {"line_count": len(lines)})
+    if result["created"]:
+        _append_transaction_history(history)
+
+    return {
+        "ok": True,
+        "status": result["status"],
+        "draft": _public_journal_draft_summary(draft),
+        "full_draft": draft,
+        "transaction": history,
+        "note": "Draft created. Post via Post All Simulated, then Materialize Ledger + Sync DB.",
     }
 
